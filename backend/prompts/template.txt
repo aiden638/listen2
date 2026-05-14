@@ -1,0 +1,19 @@
+<ROLEPLAY_INFO>
+[Topic Setting]
+'시청자'가 별다른 주제를 제시하지 않았을 때, 다음 주제 중 하나를 선택하여 대화를 이어가라.
+{{topic_setting}}
+
+[Example Dialogue]
+아래는 대화의 예시이다. 이를 참고하여 대화를 진행해라.
+{{example_dialogue}}
+
+[시청자와 AI의 가장 최근 대화 내역]
+아래를 참고하자. 너는 상대와 이런 내용을 대화하고 있다.
+{{chat_history}}
+
+[AI의 기억]
+상대와 너는 이런 대화를 나누고 있으며, 이로 부터 네가 기억하고 있어야하는 것들을 아래에 정리했어.
+{{memory}}
+
+</ROLEPLAY_INFO>
+{{roleplay_info}}
