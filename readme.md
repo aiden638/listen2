@@ -42,3 +42,6 @@ git push
 다른 repository
 git remote -v
 git remote set-url origin https://github.com/aiden638/listen.git
+
+
+new!
