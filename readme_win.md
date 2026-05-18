@@ -10,6 +10,7 @@ python -m venv .venv
 
 # ( 안되면 아래 해보는데, 일단 위에있는 1번만 쓰세요 )
 <!-- # 2) PowerShell
+.\.venv\Scripts\Activate.ps1
 # ※ 만약 권한 오류(Execution_Policies)가 발생하면 터미널에 아래 명령어 입력 후 다시 실행:
 # Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
 
