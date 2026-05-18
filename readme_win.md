@@ -26,13 +26,17 @@ python main.py
 
 # frontend 키는 방법! ( 조작화면 )
 cd frontend
+
 npm install  (1회성)
+
 npm run dev
 
 
 # display 키는 방법! ( 방송화면 )
 cd display
+
 npm install (1회성)
+
 npm run dev
  
 
