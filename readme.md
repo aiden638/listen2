@@ -44,4 +44,5 @@ git remote -v
 git remote set-url origin https://github.com/aiden638/listen.git
 
 
-new!
+vercel login
+vercel --prod
