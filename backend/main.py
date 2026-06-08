@@ -5,7 +5,7 @@ import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import google.generativeai as genai
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -36,15 +36,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROMPTS_DIR = os.path.join(BASE_DIR, "prompts")
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 
 if not os.path.exists(PROMPTS_DIR):
     os.makedirs(PROMPTS_DIR)
+
+# config.json에서 모델/메모리 설정을 읽는다. 파일이 없거나 키가 빠져도 기본값으로 동작한다.
+DEFAULT_CONFIG = {
+    "model": "gpt-4o-mini",
+    "temperature": 0.8,
+    "short_term_turns": 3,
+    "summary_model": "gpt-4o-mini",
+}
+
+def get_config():
+    config = dict(DEFAULT_CONFIG)
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                config.update(json.load(f))
+        except Exception:
+            pass
+    return config
 
 # --- 자동 마이그레이션 로직 제거 (TXT 기반으로 환원) ---
 
@@ -83,6 +101,36 @@ def get_assembled_prompt():
         return assembled
     except Exception as e:
         return "You are a helpful AI assistant."
+
+def parse_history_to_messages(history_content):
+    """chat_history.txt(단기 기억)를 OpenAI messages 형식으로 변환한다.
+
+    저장 형식: 각 턴은 'User: ...\nAI: ...' 이고 턴 사이는 '---'로 구분된다.
+    """
+    messages = []
+    if not history_content:
+        return messages
+    exchanges = [e.strip() for e in history_content.split("---") if e.strip()]
+    for exchange in exchanges:
+        match = re.match(r"User:\s*(.*?)\nAI:\s*(.*)", exchange, re.DOTALL)
+        if match:
+            user_text = match.group(1).strip()
+            ai_text = match.group(2).strip()
+            if user_text:
+                messages.append({"role": "user", "content": user_text})
+            if ai_text:
+                messages.append({"role": "assistant", "content": ai_text})
+    return messages
+
+def call_gpt(messages, model, temperature=None):
+    """OpenAI Chat Completions 호출 후 응답 텍스트를 반환한다."""
+    if client is None:
+        raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다. backend/.env를 확인하세요.")
+    kwargs = {"model": model, "messages": messages}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    response = client.chat.completions.create(**kwargs)
+    return response.choices[0].message.content.strip()
 
 @app.get("/")
 async def root():
@@ -151,49 +199,55 @@ async def update_broadcast_settings(settings: SettingsUpdate):
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
+    config = get_config()
     system_prompt = get_assembled_prompt()
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        
-        # 1. AI 답변 생성
-        full_prompt = f"System: {system_prompt}\n\nUser: {request.message}"
-        response = model.generate_content(full_prompt)
-        ai_text = response.text
-        
-        # 2. 파일 경로 설정
+        # 1. 파일 경로 설정
         history_path = os.path.join(PROMPTS_DIR, "chat_history.txt")
         memory_path = os.path.join(PROMPTS_DIR, "memory.txt")
-        
-        # 3. chat_history.txt 업데이트
+
+        # 2. 단기 기억(최근 대화)을 messages 배열로 구성
         history_content = ""
         if os.path.exists(history_path):
             with open(history_path, "r", encoding="utf-8") as f:
                 history_content = f.read().strip()
-        
+
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(parse_history_to_messages(history_content))
+        messages.append({"role": "user", "content": request.message})
+
+        # 3. AI 답변 생성
+        ai_text = call_gpt(messages, config["model"], config.get("temperature"))
+
+        # 4. chat_history.txt 업데이트
         new_exchange = f"User: {request.message}\nAI: {ai_text}"
         if history_content:
             full_history = history_content + "\n---\n" + new_exchange
         else:
             full_history = new_exchange
-            
-        # 4. 메모리 관리 (최근 3개 턴 유지)
+
+        # 5. 메모리 관리 (최근 N개 턴만 단기 기억으로 유지, 나머지는 장기 기억으로 요약)
+        short_term_turns = config.get("short_term_turns", 3)
         exchanges = [e.strip() for e in full_history.split("---") if e.strip()]
-        if len(exchanges) > 3:
-            # 요약할 대상 (가장 오래된 대화)
-            to_summarize = exchanges[0]
-            remaining_history = "\n---\n".join(exchanges[1:])
-            
-            # 기존 메모리 읽기
+        if len(exchanges) > short_term_turns:
+            # 요약할 대상 (단기 기억 범위를 벗어난 가장 오래된 대화들)
+            overflow = exchanges[:-short_term_turns]
+            remaining_history = "\n---\n".join(exchanges[-short_term_turns:])
+            to_summarize = "\n---\n".join(overflow)
+
+            # 기존 장기 기억 읽기
             old_memory = ""
             if os.path.exists(memory_path):
                 with open(memory_path, "r", encoding="utf-8") as f:
                     old_memory = f.read().strip()
-            
+
             # 요약 생성 요청
             summary_prompt = f"다음은 대화의 일부와 기존 요약본이다. 이를 합쳐서 핵심 내용을 짧게 요약해줘.대화 내용은 무조건 빠짐 없이 기억되어야 해. \n\n기존 요약: {old_memory}\n새로운 대화: {to_summarize}"
-            summary_response = model.generate_content(summary_prompt)
-            new_memory = summary_response.text.strip()
-            
+            new_memory = call_gpt(
+                [{"role": "user", "content": summary_prompt}],
+                config.get("summary_model", config["model"]),
+            )
+
             # 파일 업데이트
             with open(memory_path, "w", encoding="utf-8") as f:
                 f.write(new_memory)
@@ -204,11 +258,11 @@ async def chat(request: ChatRequest):
             with open(history_path, "w", encoding="utf-8") as f:
                 f.write(full_history)
 
-        # 5. 상태 업데이트 및 반환
+        # 6. 상태 업데이트 및 반환
         global latest_response
         latest_response = {"content": ai_text, "timestamp": time.time()}
         return {"response": ai_text}
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

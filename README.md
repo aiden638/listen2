@@ -1,57 +1,53 @@
-# 🎵 Chat-based Audio Recommendation Pipeline
-
-이 프로젝트는 인터넷 방송 등에서 올라오는 **실시간 채팅 키워드**들의 분위기를 파악하여 가장 잘 어울리는 **음원을 추천**해 주는 AI 파이프라인입니다.
-
----
-
-## 🛠 아키텍처 및 시스템 설계
-
-이 시스템은 크게 **[데이터 로드 및 모델 학습]** 단계와 **[키워드 기반 추천]** 단계로 나뉩니다.
-
-### 1. 데이터 레이어 (Data Layer)
-*   **`final_dataset.csv`**: 음악 곡들의 음향적 특징을 나타내는 9가지 수치 데이터(danceability, energy, speechiness, acousticness, instrumentalness, liveness, valence, tempo, loudness)를 담고 있습니다.
-*   **`word_audio_profiles_2000_flat.json`**: "텐션", "신남", "슬픔" 등 다양한 감정/상황 키워드들이 어떤 음향적 특징(Target)을 가지는지 매핑해 둔 사전입니다.
-
-### 2. 특징 추출 모델 (AutoEncoder) - `train_model.py`
-기존의 9차원 음향 특징 공간을 그대로 사용하지 않고, 딥러닝을 통해 곡들의 **핵심 분위기(Latent Vector)** 로 압축합니다.
-*   **PyTorch 기반 구조**: Input(9차원) → Hidden(8차원) → **Latent(4차원)** → Hidden(8차원) → Output(9차원)
-*   학습이 완료된 후, **인코더(Encoder)** 부분만 사용하여 `final_dataset.csv`에 있는 모든 곡의 특징을 4차원의 잠재 벡터(Latent Vector)로 변환합니다. 이를 통해 노래들을 보다 핵심적이고 추상적인 "분위기 공간"에 배치합니다.
-
-### 3. 클러스터링 모델 (KMeans) - `train_model.py`
-*   추출된 4차원 잠재 벡터를 기반으로 모든 노래를 10개의 클러스터(분위기 그룹)로 묶습니다(`KMeans`).
-*   이 클러스터 정보는 추후 동일한 분위기의 노래가 너무 연속으로 재생되는 것을 막는 **페널티 시스템**에 사용됩니다.
-
-### 4. 추천 시스템 엔진 - `recommender.py`
-실제 추천이 이루어지는 핵심 프로세스는 다음과 같습니다:
-1.  **키워드 변환**: 입력된 5개의 단어를 JSON 사전에서 검색하여 9차원 오디오 특징으로 변환합니다.
-2.  **공간 매핑**: 이 특징들을 미리 학습된 AutoEncoder의 인코더에 통과시켜 노래들과 동일한 **4차원 잠재 벡터 공간**에 단어들을 위치시킵니다.
-3.  **분위기 벡터 생성**: 5개 단어의 잠재 벡터들의 **평균(Mean)** 을 구하여 현재 채팅창의 종합적인 "분위기 벡터(Mood Vector)"를 만듭니다.
-4.  **후보군 추출**: 채팅 분위기 벡터와 모든 노래들의 잠재 벡터 간의 **유클리디안 거리(Euclidean Distance)** 를 계산하여, 거리가 가장 가까운(분위기가 가장 비슷한) 상위 50곡을 1차 후보군으로 뽑습니다.
-5.  **페널티 및 재정렬 (Deduplication)**: 다양한 곡 추천을 위해 최근에 재생된 노래 목록을 확인하고 페널티 점수를 부여합니다.
-    *   최근 재생된 **아티스트**와 같은 경우: +1.5점 (강한 페널티)
-    *   최근 재생된 **클러스터(분위기)** 와 같은 경우: +0.5점 (약한 페널티)
-6.  **최종 추천**: 기본 거리 점수와 페널티 점수를 합산하여 가장 낮은 점수를 받은 1곡을 최종적으로 추천합니다.
-
----
-
-## 🚀 실행 방법
-
-### 환경 설정
-의존성 패키지를 설치합니다.
-```bash
-pip install torch pandas numpy scikit-learn joblib
-```
-
-### 1. 모델 학습 및 데이터 전처리
-가장 먼저 데이터셋을 학습하여 모델과 전처리된 데이터를 생성해야 합니다.
-```bash
-python train_model.py
-```
-> 실행이 완료되면 `models/` 폴더에 `autoencoder.pth`, `scaler.pkl`, `kmeans.pkl`, `processed_songs.csv` 파일이 생성됩니다.
-
-### 2. 추천 로직 테스트
-키워드를 넣고 실제로 곡이 어떻게 추천되는지 확인합니다.
-```bash
+# backend 키는 방법!
+cd backend
+source .venv/bin/activate 
+pip install -r requirements.txt (1회성)
 python main.py
-```
-`main.py` 내부의 `chat_input` 리스트를 수정하여 다양한 키워드 상황을 시뮬레이션 해볼 수 있습니다.
+
+# frontend 키는 방법! ( 조작화면 )
+cd frontend
+npm install  (1회성)
+npm run dev
+
+# displat 키는 방법! ( 방송화면 )
+cd display
+npm install (1회성)
+npm run dev
+ 
+
+# 왠만하면 안쓸것들
+lsof -i :8000
+kill -9 PID번호  
+-> 포트가 겹쳐서 막힌다
+
+python -m pip install google-generativeai fastapi uvicorn python-dotenv
+python -m uvicorn main:app --reload
+-> 먼지 까먹음
+
+에러 뜨면 FastAPI에서 직접 확인해보기
+http://localhost:8000/docs
+-> gemini API 문제로 채팅이 안될때
+
+git init
+git status
+git add .
+git commit -m "first commit"
+git remote add origin https://github.com/아이디/저장소이름.git
+git branch -M main
+git push -u origin main
+
+git add .
+git commit -m "수정 내용 설명"
+git push
+
+다른 repository
+git remote -v
+git remote set-url origin https://github.com/aiden638/listen.git
+
+-> github 관련
+
+
+vercel login
+vercel --prod
+
+-> vercel 관련
