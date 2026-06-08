@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"/>
+  <title>YT Player</title>
+  <style>
+    body { font-family: sans-serif; max-width: 420px; margin: 60px auto; padding: 0 16px; }
+    input { width: 100%; padding: 8px; margin: 6px 0 14px; font-size: 1rem; box-sizing: border-box; }
+    button { padding: 10px 20px; font-size: 1rem; cursor: pointer; margin-right: 8px; }
+    #status { margin-top: 18px; color: #555; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <h2>🎵 YT Player</h2>
+  <label>제목</label>
+  <input id="title" placeholder="예: Supernova" />
+  <label>아티스트</label>
+  <input id="artist" placeholder="예: aespa" />
+  <button onclick="play()">▶ 재생</button>
+  <button onclick="stop()">⏹ 정지</button>
+  <div id="status"></div>
+
+  <script>
+    const BASE = 'http://localhost:8001';
+    const $s = document.getElementById('status');
+
+    async function play() {
+      const title  = document.getElementById('title').value.trim();
+      const artist = document.getElementById('artist').value.trim();
+      if (!title || !artist) { $s.textContent = '제목과 아티스트를 입력하세요.'; return; }
+      $s.textContent = '검색 중…';
+      const r = await fetch(`${BASE}/play`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({title, artist})
+      });
+      const d = await r.json();
+      $s.textContent = `▶ ${d.title} — ${d.artist} 재생 시작`;
+      poll();
+    }
+
+    async function stop() {
+      await fetch(`${BASE}/stop`, {method:'POST'});
+      $s.textContent = '⏹ 정지됨';
+    }
+
+    async function poll() {
+      const r = await fetch(`${BASE}/status`);
+      const d = await r.json();
+      if (d.status === 'searching') {
+        $s.textContent = `🔍 YouTube 검색 중: ${d.title} — ${d.artist}`;
+        setTimeout(poll, 1000);
+      } else if (d.status === 'playing') {
+        $s.textContent = `▶ 재생 중: ${d.title} — ${d.artist}`;
+        setTimeout(poll, 3000);
+      } else if (d.status === 'error') {
+        $s.textContent = `❌ 오류: ${d.error}`;
+      }
+    }
+  </script>
+</body>
+</html>
