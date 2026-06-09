@@ -80,3 +80,76 @@ git remote set-url origin https://github.com/aiden638/listen.git
 # vercel 관련
 vercel login
 vercel --prod
+
+
+===================================================================
+# 🎵 AI 음악 추천 + 재생 파이프라인 (2026.06 추가)
+===================================================================
+
+대화 분위기에 맞는 노래를 골라 자동으로 틀어주는 흐름:
+대화(GPT) → 무드 키워드 5개 → 곡 추천 → YouTube 검색 → mpv 재생
+
+## ⚠️ 중요 변경 (기존 팀원 주목)
+- 채팅이 **Gemini → OpenAI(gpt-4o-mini)** 로 바뀜.
+  → `backend/.env` 에 `OPENAI_API_KEY=sk-...` 필요 (GEMINI_API_KEY는 더 이상 안 씀)
+- venv를 **루트 공용 `.venv` 하나로 통일** (backend/.venv는 폐기).
+  → 기존 venv 그대로 써도 되지만, `pip install -r requirements.txt` 다시 한 번 + OpenAI 키만 넣으면 됨. 충돌 없음.
+
+## 서비스 구성 (각각 별도 터미널)
+| 폴더 | 포트 | 역할 |
+|------|------|------|
+| backend | 8000 | GPT 대화 · 무드 키워드 · 곡 선정 |
+| yt      | 8001 | title+artist → yt-dlp 검색 → mpv 재생 |
+| frontend| -    | 조작 화면 (npm) |
+| display | -    | 방송 화면 (npm) |
+
+## 1회 환경설정 (루트에서)
+# 1) 루트 공용 venv 생성 + 활성화 (cmd)
+python -m venv .venv
+.venv\Scripts\activate.bat
+
+# 2) Python 의존성 한 번에 (torch 등 포함, 시간 좀 걸림)
+pip install -r requirements.txt
+
+# 3) mpv 설치 (재생용, pip 아님 / winget 없으면 scoop 사용)
+#    PowerShell에서:
+#      Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+#      irm get.scoop.sh | iex
+#      scoop bucket add extras
+#      scoop install mpv
+#    확인: mpv --version
+
+# 4) backend/.env 에 OpenAI 키
+#    OPENAI_API_KEY=sk-...
+
+## 빠른 점검 (서버 없이)
+cd backend
+python test_chat.py     # 채팅 + 키워드 + 추천까지 한 번에 확인 (mpv 불필요)
+python test_live.py     # 대화형: 대화하다 !음악 입력하면 추천+재생 (yt 서버 필요)
+
+## 실제 실행 (터미널 2개, 둘 다 .venv 활성화)
+# 터미널 A — yt 재생 서버
+.venv\Scripts\activate.bat
+cd yt
+uvicorn main:app --port 8001
+
+# 터미널 B — backend
+.venv\Scripts\activate.bat
+cd backend
+uvicorn main:app --port 8000
+
+## ⚠️ mpv PATH 함정 (재생 안 될 때 99%)
+증상: yt 서버 status가 {"error":"[WinError 2] 지정된 파일을 찾을 수 없습니다"}, 소리 안 남.
+원인: mpv는 scoop이 C:\Users\<사용자>\scoop\apps\mpv\current 폴더를 PATH에 등록하는데,
+      VS Code 통합 터미널은 VS Code 켤 때의 옛 PATH를 물고 있어 mpv를 못 찾음.
+해결(택1):
+  - VS Code를 완전히 껐다 켜기 (영구 해결, 권장)
+  - yt 서버 띄울 창에서 먼저: set PATH=%PATH%;C:\Users\<사용자>\scoop\apps\mpv\current
+검증: yt 서버 띄우는 창에서 `where mpv` 가 경로를 보여줘야 재생됨.
+
+## 엔드포인트 / 설정 메모
+- backend(:8000): POST /chat, POST /mood-keywords, POST /recommend(키워드 자동추출 or {"keywords":[...]}), POST /new-chat
+- yt(:8001): POST /play {title,artist}, POST /stop, GET /status  (루트 / 는 404가 정상)
+- 모델/메모리 설정: backend/config.json (model, temperature, short_term_turns, summary_model, keyword_temperature)
+- 프롬프트(페르소나·주제·예시·기억)는 backend/prompts/*.txt — 직접 편집하거나 /prompt API로 수정
+- 단기기억=chat_history.txt(최근 N턴), 장기기억=memory.txt(자동 요약). /new-chat 으로 둘 다 초기화

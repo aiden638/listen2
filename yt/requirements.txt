@@ -1,4 +1,6 @@
 fastapi
 uvicorn
-python-dotenv
-requests
+pydantic
+yt-dlp
+
+# 주의: mpv는 pip가 아니라 시스템에 설치해야 함 (예: winget install mpv)

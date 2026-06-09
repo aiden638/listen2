@@ -1,2 +1,9 @@
 .DS_Store
 backend/.env
+
+# Python 가상환경 / 캐시
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.pyc

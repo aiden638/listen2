@@ -1,0 +1,29 @@
+# ===========================================================
+#  Python dependencies - install all into one root venv (.venv)
+#    python -m venv .venv
+#    .venv\Scripts\activate.bat
+#    pip install -r requirements.txt
+# ===========================================================
+
+# --- backend (FastAPI :8000 - GPT chat / mood keywords / song selection) ---
+fastapi
+uvicorn
+pydantic
+openai
+python-dotenv
+
+# --- recommender engine (recommender.py / train_model.py / backend /recommend) ---
+torch
+pandas
+numpy
+scikit-learn
+joblib
+scipy
+
+# --- yt playback service (:8001) ---
+#   NOTE: mpv is NOT a pip package - install via: winget install mpv
+yt-dlp
+
+# --- live chat scraper (live_chat_to_input) - optional ---
+#   after install, also run: playwright install
+playwright

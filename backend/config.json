@@ -2,5 +2,6 @@
     "model": "gpt-4o-mini",
     "temperature": 0.8,
     "short_term_turns": 3,
-    "summary_model": "gpt-4o-mini"
+    "summary_model": "gpt-4o-mini",
+    "keyword_temperature": 0.3
 }

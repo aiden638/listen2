@@ -3,3 +3,11 @@ uvicorn
 pydantic
 openai
 python-dotenv
+
+# /recommend (음악 추천) 사용 시 필요 — 루트 recommender.py 의존성
+torch
+pandas
+numpy
+scikit-learn
+joblib
+scipy

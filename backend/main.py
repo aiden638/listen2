@@ -52,6 +52,7 @@ DEFAULT_CONFIG = {
     "temperature": 0.8,
     "short_term_turns": 3,
     "summary_model": "gpt-4o-mini",
+    "keyword_temperature": 0.3,
 }
 
 def get_config():
@@ -64,10 +65,25 @@ def get_config():
             pass
     return config
 
+# 음악 추천용 무드 단어 사전 (프로젝트 루트, backend의 부모 폴더에 위치)
+WORD_PROFILES_PATH = os.path.join(os.path.dirname(BASE_DIR), "word_audio_profiles_2000_flat.json")
+_mood_words_cache = None
+
+def load_mood_words():
+    """word_audio_profiles_2000_flat.json의 단어(키) 목록을 캐시해서 반환한다."""
+    global _mood_words_cache
+    if _mood_words_cache is None:
+        with open(WORD_PROFILES_PATH, "r", encoding="utf-8") as f:
+            _mood_words_cache = list(json.load(f).keys())
+    return _mood_words_cache
+
 # --- 자동 마이그레이션 로직 제거 (TXT 기반으로 환원) ---
 
 class ChatRequest(BaseModel):
     message: str
+
+class RecommendRequest(BaseModel):
+    keywords: list[str] | None = None
 
 class PromptRequest(BaseModel):
     filename: str
@@ -122,13 +138,15 @@ def parse_history_to_messages(history_content):
                 messages.append({"role": "assistant", "content": ai_text})
     return messages
 
-def call_gpt(messages, model, temperature=None):
+def call_gpt(messages, model, temperature=None, response_format=None):
     """OpenAI Chat Completions 호출 후 응답 텍스트를 반환한다."""
     if client is None:
         raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다. backend/.env를 확인하세요.")
     kwargs = {"model": model, "messages": messages}
     if temperature is not None:
         kwargs["temperature"] = temperature
+    if response_format is not None:
+        kwargs["response_format"] = response_format
     response = client.chat.completions.create(**kwargs)
     return response.choices[0].message.content.strip()
 
@@ -263,6 +281,144 @@ async def chat(request: ChatRequest):
         latest_response = {"content": ai_text, "timestamp": time.time()}
         return {"response": ai_text}
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+def select_mood_keywords(context, words, config, target_count=5, max_attempts=3):
+    """대화 맥락(context)에 가장 어울리는 대표 단어 target_count개를 후보 목록(words) 안에서 고른다.
+
+    추천 엔진이 앞쪽 단어에 더 큰 가중치를 주므로, 가장 잘 맞는 단어부터 순서대로 반환한다.
+    GPT가 후보 목록에 없는 단어를 만들어내면 검증 단계에서 걸러지는데, 그렇게 개수가 모자라면
+    이미 고른 단어를 제외하고 부족한 만큼 다시 요청한다(최대 max_attempts회). 그 결과 반환되는
+    단어는 항상 후보 목록(words) 안에 존재함이 보장된다.
+    """
+    word_list_str = ", ".join(words)
+    valid_set = set(words)
+    selected = []
+    rejected = []  # GPT가 골랐지만 후보 목록에 없어서 버린 단어들 (다음 시도에서 제외)
+
+    for attempt in range(max_attempts):
+        need = target_count - len(selected)
+        if need <= 0:
+            break
+
+        # 일부가 또 걸러질 것에 대비해 여유 있게 요청
+        request_count = need + 3
+        system_msg = (
+            "너는 대화의 분위기를 분석해 배경 음악 추천용 키워드를 뽑는 도구다. "
+            "반드시 아래 '후보 단어 목록'에 그대로 적혀 있는 단어들 중에서만 골라야 한다. "
+            "목록에 없는 단어를 새로 만들거나 변형하는 것은 절대 금지다. "
+            f"지금 대화의 분위기를 가장 잘 나타내는 대표 단어 {request_count}개를, 가장 잘 어울리는 것부터 순서대로 고른다. "
+            '반드시 {"keywords": ["단어1", "단어2", ...]} 형태의 JSON으로만 답하라.'
+        )
+        if selected:
+            system_msg += f" 다음 단어들은 이미 선택했으니 제외하라: {', '.join(selected)}."
+        if rejected:
+            system_msg += f" 다음 단어들은 후보 목록에 없으니 절대 다시 고르지 마라: {', '.join(rejected)}."
+        system_msg += f"\n\n[후보 단어 목록]\n{word_list_str}"
+
+        user_msg = f"[대화 맥락]\n{context}"
+
+        raw = call_gpt(
+            [{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
+            config["model"],
+            config.get("keyword_temperature", 0.3),
+            response_format={"type": "json_object"},
+        )
+
+        parsed = json.loads(raw)
+        candidates = parsed.get("keywords", []) if isinstance(parsed, dict) else []
+
+        # 후보 목록에 실제로 존재하는 단어만, 순서/중복 제거하여 채운다
+        for w in candidates:
+            if not isinstance(w, str):
+                continue
+            if w in valid_set:
+                if w not in selected:
+                    selected.append(w)
+            elif w not in rejected:
+                rejected.append(w)
+            if len(selected) >= target_count:
+                break
+
+    return selected[:target_count]
+
+def read_local_context():
+    """국소적인(최근) 대화 맥락 = 단기 기억(chat_history). 비어있으면 최신 응답으로 대체."""
+    history_path = os.path.join(PROMPTS_DIR, "chat_history.txt")
+    context = ""
+    if os.path.exists(history_path):
+        with open(history_path, "r", encoding="utf-8") as f:
+            context = f.read().strip()
+    if not context and latest_response.get("content"):
+        context = f"AI: {latest_response['content']}"
+    return context
+
+def song_to_dict(song):
+    """recommender.recommend()가 반환한 pandas Series를 JSON 안전한 dict로 변환한다."""
+    def to_native(v):
+        if hasattr(v, "item"):  # numpy 스칼라 → 파이썬 기본 타입
+            try:
+                v = v.item()
+            except Exception:
+                pass
+        if isinstance(v, float) and v != v:  # NaN
+            return None
+        return v
+
+    result = {}
+    for field in ["track_name", "artist_name", "album_name", "cluster_id", "final_score"]:
+        val = song.get(field)
+        if val is not None:
+            result[field] = to_native(val)
+    return result
+
+@app.post("/mood-keywords")
+async def mood_keywords():
+    """지금까지의 국소적인 대화 맥락에서 분위기를 대표하는 단어 5개를 뽑아 반환한다."""
+    config = get_config()
+
+    context = read_local_context()
+    if not context:
+        raise HTTPException(status_code=400, detail="대화 맥락이 비어있어 키워드를 뽑을 수 없습니다.")
+
+    try:
+        words = load_mood_words()
+        keywords = select_mood_keywords(context, words, config)
+        if not keywords:
+            raise HTTPException(status_code=500, detail="유효한 키워드를 뽑지 못했습니다.")
+        return {"keywords": keywords}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/recommend")
+async def recommend(request: RecommendRequest | None = None):
+    """대화 맥락에 어울리는 곡 1개를 추천한다.
+
+    - keywords를 직접 넘기면 그 단어들로 추천한다.
+    - 넘기지 않으면 국소적인 대화 맥락에서 무드 키워드 5개를 자동 추출해 추천한다.
+    """
+    config = get_config()
+
+    keywords = request.keywords if request and request.keywords else None
+    if not keywords:
+        context = read_local_context()
+        if not context:
+            raise HTTPException(status_code=400, detail="대화 맥락이 비어있어 추천할 수 없습니다.")
+        words = load_mood_words()
+        keywords = select_mood_keywords(context, words, config)
+        if not keywords:
+            raise HTTPException(status_code=500, detail="유효한 키워드를 뽑지 못했습니다.")
+
+    try:
+        from recommender_bridge import get_recommender
+        recommender = get_recommender()
+        song = recommender.recommend(keywords)
+        return {"keywords": keywords, "song": song_to_dict(song)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
