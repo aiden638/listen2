@@ -1,10 +1,33 @@
 import asyncio
+import json
+import os
+import urllib.request
+
 from playwright.async_api import async_playwright
 
 
 COMMENT_SELECTOR = ".chat_box"      # 실제 위플랩 댓글 박스 selector로 수정 필요
 NAME_SELECTOR = ".name"             # 닉네임 selector로 수정 필요
 TEXT_SELECTOR = ".text"             # 댓글 내용 selector로 수정 필요
+
+# 감지한 댓글을 backend로 보내는 엔드포인트(라이브 채팅 수집).
+BACKEND_INGEST_URL = os.environ.get("BACKEND_INGEST_URL", "http://localhost:8000/ingest")
+
+
+def post_ingest(name, text):
+    """댓글 한 줄을 backend /ingest로 보낸다(동기). 실패해도 모니터링은 계속한다."""
+    payload = json.dumps({"user": name, "text": text}).encode("utf-8")
+    req = urllib.request.Request(
+        BACKEND_INGEST_URL, data=payload,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status
+    except Exception as e:
+        # 라이브 채팅 수신 OFF면 backend가 403을 준다 — 정상 동작이므로 조용히 넘어간다.
+        print(f"  [/ingest 전송 실패] {e}")
+        return None
 
 
 def is_valid_chat(chat):
@@ -129,10 +152,12 @@ class CommentMonitor:
 async def on_new_chat(chats):
     """
     새 댓글이 들어왔을 때 실행되는 함수.
-    나중에 여기에 시로AI, 음악 추천 AI, 자동 응답 로직을 연결하면 된다.
+    감지한 댓글을 backend /ingest로 보내 단기기억+채팅 tick(선별 응답/음악 선곡)에 태운다.
     """
     for chat in chats:
         print(f"[새 댓글] {chat['name']}: {chat['text']}")
+        # urlopen은 블로킹이므로 이벤트 루프를 막지 않게 스레드로 보낸다.
+        await asyncio.to_thread(post_ingest, chat["name"], chat["text"])
 
 
 async def main():

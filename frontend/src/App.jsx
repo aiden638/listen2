@@ -11,6 +11,7 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [moodInput, setMoodInput] = useState(''); // 운영자가 첫 곡 분위기를 직접 지정할 때 입력
 
   // Layout Resizing State
   const [chatWidth, setChatWidth] = useState(window.innerWidth * 0.35);
@@ -106,19 +107,44 @@ function App() {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       if (type === 'image') {
         handleUpdateBroadcastSettings({ bg_image: event.target.result });
       } else {
-        handleUpdateBroadcastSettings({ 
-          music_url: event.target.result, 
-          music_title: file.name, 
-          current_time: 0, 
+        // 로컬 파일(테스트) 재생 모드로 전환. 자동 DJ(mpv)와 겹치지 않도록 DJ를 먼저 끈 뒤 전환.
+        await handleStopDj();
+        handleUpdateBroadcastSettings({
+          music_url: event.target.result,
+          music_title: file.name,
+          music_source: 'upload',
+          current_time: 0,
           is_playing: false // 자동 재생 방지
         });
       }
     };
     reader.readAsDataURL(file);
+  };
+
+  // 자동 DJ 시작. keywords를 주면 운영자가 지정한 분위기로 첫 곡을 시작한다(없으면 대화 맥락 기반).
+  // 업로드 파일은 끄고 DJ로 전환.
+  const handleStartDj = async (keywords) => {
+    try {
+      // display의 브라우저 audio가 업로드 파일을 계속 틀지 않도록 음원 URL을 비운다.
+      handleUpdateBroadcastSettings({ music_url: '', music_source: 'dj' });
+      const body = (Array.isArray(keywords) && keywords.length) ? { keywords } : {};
+      await fetch(`${API_BASE}/dj/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (e) { console.error(e); }
+  };
+
+  // 자동 DJ 중지
+  const handleStopDj = async () => {
+    try {
+      await fetch(`${API_BASE}/dj/stop`, { method: 'POST' });
+    } catch (e) { console.error(e); }
   };
 
   const formatTime = (seconds) => {
@@ -246,6 +272,71 @@ function App() {
             </div>
           </div>
 
+          {/* 4-b. Auto DJ Tile (1x1) — 대화 분위기 기반 자동 선곡/재생 (yt+mpv) */}
+          <div className="tile-node glass-card">
+            <div className="tile-header-node"><Music size={14} /> <span>자동 DJ (분위기 선곡)</span></div>
+            <div className="tile-content-node">
+              <div className="visibility-control">
+                <div className="visibility-btn-group">
+                  <button
+                    className={`vis-btn ${settings.music_source === 'dj' ? 'active show' : ''}`}
+                    onClick={() => handleStartDj()}
+                  >
+                    시작
+                  </button>
+                  <button
+                    className={`vis-btn ${settings.music_source !== 'dj' ? 'active hide' : ''}`}
+                    onClick={handleStopDj}
+                  >
+                    중지
+                  </button>
+                </div>
+                <div className="vis-hint">
+                  {settings.music_source === 'dj'
+                    ? '대화 분위기로 곡을 자동 선곡·재생 중'
+                    : '시작하면 대화 맥락에 맞는 음악이 흐릅니다'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 4-c. Mood Tile (1x1) — 현재 분위기 보기 + 편집 + 그 분위기로 첫 곡 시작 */}
+          <div className="tile-node glass-card">
+            <div className="tile-header-node"><Sparkles size={14} /> <span>분위기 (첫 곡 지정)</span></div>
+            <div className="tile-content-node">
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px', minHeight: '20px' }}>
+                {(settings.current_mood && settings.current_mood.length > 0)
+                  ? settings.current_mood.map((m, i) => (
+                      <span key={i} style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '10px', background: 'rgba(255,255,255,0.12)' }}>{m}</span>
+                    ))
+                  : <span style={{ fontSize: '12px', opacity: 0.5 }}>아직 분위기 없음</span>}
+              </div>
+              <input
+                type="text"
+                value={moodInput}
+                onChange={(e) => setMoodInput(e.target.value)}
+                placeholder="예: 신남, 설렘 (쉼표로 구분)"
+                style={{ width: '100%', boxSizing: 'border-box', padding: '6px 8px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(0,0,0,0.2)', color: 'inherit', fontSize: '12px' }}
+              />
+              <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
+                <button
+                  className="vis-btn"
+                  style={{ flex: 1 }}
+                  onClick={() => setMoodInput((settings.current_mood || []).join(', '))}
+                >
+                  현재 분위기 불러오기
+                </button>
+                <button
+                  className="vis-btn active show"
+                  style={{ flex: 1 }}
+                  onClick={() => handleStartDj(moodInput.split(',').map(s => s.trim()).filter(Boolean))}
+                >
+                  이 분위기로 시작
+                </button>
+              </div>
+            </div>
+          </div>
+
           {/* 5. Character Visibility Tile (1x1) */}
           <div className="tile-node glass-card">
             <div className="tile-header-node"><User size={14} /> <span>캐릭터 표시 설정</span></div>
@@ -333,6 +424,14 @@ function App() {
                     />
                     <div className="slider-glow" style={{ width: `${(settings.current_time / settings.duration) * 100}%` }}></div>
                   </div>
+
+                  {/* 자동 DJ가 미리 선정해 둔 다음 곡 */}
+                  {settings.next_title && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', fontSize: '12px', opacity: 0.7 }}>
+                      <ListMusic size={12} />
+                      <span>다음 곡: {settings.next_title}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

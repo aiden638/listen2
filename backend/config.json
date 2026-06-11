@@ -1,7 +1,12 @@
 {
     "model": "gpt-4o-mini",
     "temperature": 0.8,
-    "short_term_turns": 3,
     "summary_model": "gpt-4o-mini",
-    "keyword_temperature": 0.3
+    "keyword_temperature": 0.3,
+    "short_term_ttl_sec": 120,
+    "short_term_max": 40,
+    "tick_seconds": 4,
+    "tick_messages": 8,
+    "prefetch_lead_sec": 60,
+    "default_song_sec": 210
 }

@@ -43,8 +43,10 @@ function App() {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
 
   // Update backend with current playback status
+  // 업로드(로컬 파일) 재생일 때만 브라우저 <audio>의 시간을 보고한다.
+  // DJ 추천곡은 yt/mpv가 서버에서 재생하므로(music_url 없음) 시간을 보고하면 안 된다.
   const reportPlaybackStatus = async () => {
-    if (!audioRef.current || !isAudioStarted) return;
+    if (!audioRef.current || !isAudioStarted || !currentMusicUrl) return;
     try {
       await fetch(`${API_BASE}/broadcast-settings`, {
         method: 'POST',
@@ -75,14 +77,15 @@ function App() {
         if (setRes.ok) {
           const setData = await setRes.json();
           
-          // Handle Play/Pause
-          if (audioRef.current && isAudioStarted) {
+          // 업로드(로컬 파일) 재생일 때만 브라우저 audio를 제어한다.
+          // DJ 추천곡은 yt/mpv가 서버에서 재생하므로 브라우저 audio는 관여하지 않는다.
+          if (audioRef.current && isAudioStarted && setData.music_url) {
             if (setData.is_playing && audioRef.current.paused) {
               audioRef.current.play().catch(e => console.log(e));
             } else if (!setData.is_playing && !audioRef.current.paused) {
               audioRef.current.pause();
             }
-            
+
             // Handle Seeking from Controller (if diff > 3s)
             if (Math.abs(setData.current_time - audioRef.current.currentTime) > 3) {
                 audioRef.current.currentTime = setData.current_time;
@@ -92,10 +95,19 @@ function App() {
           if (setData.timestamp > settings.timestamp) {
             setSettings(setData);
             if (setData.music_url && setData.music_url !== currentMusicUrl) {
+              // 새 업로드 파일 로드
               setCurrentMusicUrl(setData.music_url);
               if (audioRef.current) {
                 audioRef.current.src = setData.music_url;
                 if (isAudioStarted && setData.is_playing) audioRef.current.play().catch(e => console.log(e));
+              }
+            } else if (!setData.music_url && currentMusicUrl) {
+              // DJ 전환 등으로 음원 URL이 비워짐 → 업로드 오디오를 멈춰 이중재생 방지
+              setCurrentMusicUrl(null);
+              if (audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current.removeAttribute('src');
+                audioRef.current.load();
               }
             }
           }
@@ -286,6 +298,11 @@ function App() {
               <div className="progress-container">
                 <div className="progress-bar" style={{ width: `${(settings.current_time / settings.duration) * 100}%` }}></div>
               </div>
+              {settings.next_title && (
+                <div className="next-up" style={{ fontSize: '11px', opacity: 0.65, marginTop: '4px' }}>
+                  다음 곡 ▸ {settings.next_title}
+                </div>
+              )}
             </div>
             <div className="audio-status">
               <Volume2 size={18} className={settings.is_playing ? "text-accent" : "text-muted"} />
