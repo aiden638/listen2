@@ -20,6 +20,7 @@ function App() {
     current_time: 0,
     duration: 0,
     show_character: true,
+    accept_live_chat: true,
     timestamp: 0
   });
 

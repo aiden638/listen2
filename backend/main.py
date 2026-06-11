@@ -22,6 +22,7 @@ broadcast_settings = {
     "current_time": 0,
     "duration": 0,
     "show_character": True,
+    "accept_live_chat": True,
     "timestamp": 0
 }
 
@@ -81,6 +82,7 @@ def load_mood_words():
 
 class ChatRequest(BaseModel):
     message: str
+    is_admin: bool = False
 
 class RecommendRequest(BaseModel):
     keywords: list[str] | None = None
@@ -99,6 +101,7 @@ class SettingsUpdate(BaseModel):
     current_time: float | None = None
     duration: float | None = None
     show_character: bool | None = None
+    accept_live_chat: bool | None = None
 
 def get_assembled_prompt():
     template_path = os.path.join(PROMPTS_DIR, "template.txt")
@@ -212,11 +215,14 @@ async def update_broadcast_settings(settings: SettingsUpdate):
     if settings.current_time is not None: broadcast_settings["current_time"] = settings.current_time
     if settings.duration is not None: broadcast_settings["duration"] = settings.duration
     if settings.show_character is not None: broadcast_settings["show_character"] = settings.show_character
+    if settings.accept_live_chat is not None: broadcast_settings["accept_live_chat"] = settings.accept_live_chat
     broadcast_settings["timestamp"] = time.time()
     return broadcast_settings
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
+    if not request.is_admin and not broadcast_settings.get("accept_live_chat", True):
+        raise HTTPException(status_code=403, detail="Live chat input is currently disabled.")
     config = get_config()
     system_prompt = get_assembled_prompt()
     try:

@@ -27,7 +27,8 @@ function App() {
     is_playing: true,
     current_time: 0,
     duration: 0,
-    show_character: true
+    show_character: true,
+    accept_live_chat: true
   });
 
   const chatMessagesRef = useRef(null);
@@ -83,7 +84,7 @@ function App() {
       const res = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input }),
+        body: JSON.stringify({ message: input, is_admin: true }),
       });
       const data = await res.json();
       setMessages(prev => [...prev, { role: 'ai', content: data.response }]);
@@ -266,6 +267,32 @@ function App() {
                 </div>
                 <div className="vis-hint">
                   {settings.show_character !== false ? '캐릭터가 화면에 보입니다' : '캐릭터가 숨겨졌습니다'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 6. Live Chat Toggle Tile (1x1) */}
+          <div className="tile-node glass-card">
+            <div className="tile-header-node"><MessageSquare size={14} /> <span>라이브 채팅 수신 (On / Off)</span></div>
+            <div className="tile-content-node">
+              <div className="visibility-control">
+                <div className="visibility-btn-group">
+                  <button 
+                    className={`vis-btn ${settings.accept_live_chat !== false ? 'active show' : ''}`}
+                    onClick={() => handleUpdateBroadcastSettings({ accept_live_chat: true })}
+                  >
+                    ON
+                  </button>
+                  <button 
+                    className={`vis-btn ${settings.accept_live_chat === false ? 'active hide' : ''}`}
+                    onClick={() => handleUpdateBroadcastSettings({ accept_live_chat: false })}
+                  >
+                    OFF
+                  </button>
+                </div>
+                <div className="vis-hint">
+                  {settings.accept_live_chat !== false ? '라이브 채팅(외부/스트림)을 받습니다' : '관리자 테스트 채팅만 허용합니다'}
                 </div>
               </div>
             </div>
