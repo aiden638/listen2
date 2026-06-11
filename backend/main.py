@@ -3,6 +3,7 @@ import json
 import re
 import time
 import asyncio
+import threading
 import urllib.request
 import urllib.error
 from fastapi import FastAPI, HTTPException
@@ -149,6 +150,9 @@ def get_assembled_prompt():
             clean_name = var_name.strip()
             if clean_name == "memory":
                 content = store.long_term_text()
+            elif clean_name == "current_mood":
+                mood = store.load_short_term().get("current_mood") or []
+                content = ", ".join(mood) if mood else "(아직 분위기 파악 전)"
             else:
                 txt_path = os.path.join(PROMPTS_DIR, f"{clean_name}.txt")
                 content = ""
@@ -434,21 +438,29 @@ async def recommend(request: RecommendRequest | None = None):
 _pending_count = 0
 _last_tick_ts = 0
 
-TICK_RULES = """
-
-[지금 상황 — 실시간 방송 채팅]
-- 이것은 1:다수의 실시간 방송 채팅이다. 짧고 많은 메시지가 연속으로 들어온다.
-- 모든 메시지에 답하지 마라. 단순 호응(ㅋㅋ, ㅇㅇ, 네, 아니, 와 등)은 침묵하고 맥락만 흡수한다.
-- 분위기를 바꿀 만하거나, 너를 부르거나, 질문이거나, 반응할 가치가 분명할 때만 응답한다.
-- 응답할 때는 1~2문장으로 방송 채팅처럼 짧고 자연스럽게.
-
-[출력] 반드시 아래 JSON 형식으로만 답하라:
+# 출력 형식 지시는 코드의 JSON 파싱과 결합돼 있으므로 코드에 둔다(편집 금지).
+# '언제 응답할지' 규칙은 prompts/live_rules.txt 에서 편집한다.
+TICK_OUTPUT_SPEC = """
+[출력 형식] 반드시 아래 JSON으로만 답하라:
 {"respond": true 또는 false, "reply": "응답문 (respond가 false면 빈 문자열)", "mood": ["지금 분위기 단어", ...], "remember": ["이후에도 기억할 상황 맥락 문장", ...]}
 """
 
+def read_prompt_text(filename, default=""):
+    """prompts/ 의 텍스트 파일을 읽어 반환한다(없으면 default)."""
+    path = os.path.join(PROMPTS_DIR, filename)
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return default
+
+def build_tick_system_prompt():
+    """tick용 system 프롬프트 = 페르소나/상황/기억(template) + 선별응답 규칙(live_rules) + 출력형식(코드)."""
+    live_rules = read_prompt_text("live_rules.txt")
+    return f"{get_assembled_prompt()}\n\n{live_rules}\n{TICK_OUTPUT_SPEC}"
+
 def run_tick_sync(config):
     """대기 중인 채팅 맥락으로 LLM을 1회 호출해 선별 응답/분위기/기억을 처리한다(동기)."""
-    messages = [{"role": "system", "content": get_assembled_prompt() + TICK_RULES}]
+    messages = [{"role": "system", "content": build_tick_system_prompt()}]
     messages.extend(store.short_term_openai_messages())
     if len(messages) == 1:
         return
@@ -511,6 +523,7 @@ async def ingest(request: IngestRequest):
 # 회전(다음 곡으로 교체)은 yt가 알려주는 '실제 재생 종료'를 기준으로 한다(데이터셋 길이와 무관).
 
 _dj_enabled = False
+_music_lock = threading.Lock()   # 음악 틱이 동시에 두 번 돌아 곡이 겹치는 것을 막는다
 
 def yt_play(title, artist):
     payload = json.dumps({"title": title, "artist": artist or ""}).encode("utf-8")
@@ -566,15 +579,19 @@ def pick_song(config, override_keywords=None):
 
 def _dj_kickoff(config, keywords):
     """운영자가 지정한 분위기로 첫 곡을 즉시 시작한다(pick→play, 한 스레드에서)."""
-    song = pick_song(config, override_keywords=keywords)
-    if song:
-        play_song(song, config)
-        store.set_current_mood(list(keywords))  # 표시용으로 현재 분위기도 갱신
-    return song
+    with _music_lock:  # 진행 중인 틱과 겹치지 않게 직렬화
+        song = pick_song(config, override_keywords=keywords)
+        if song:
+            play_song(song, config)
+            store.set_current_mood(list(keywords))  # 표시용으로 현재 분위기도 갱신
+        return song
 
 def play_song(song, config):
-    """yt로 재생을 요청하고 playback.json·broadcast_settings에 반영한다."""
-    yt_play(song.get("track_name", ""), song.get("artist_name", ""))
+    """곡을 '현재 곡'으로 기록·표시하고 실제 재생은 yt(mpv)에 위임한다.
+
+    yt 호출이 실패해도(예: yt 서버가 안 떠 있음) 선정/표시 자체는 유지하고
+    에러만 로그로 남긴다 → 곡 선정이 재생 실패에 휩쓸려 사라지지 않게 한다.
+    """
     dur = song.get("duration_sec") or config["default_song_sec"]
     pb = store.load_playback()
     if pb.get("now_playing"):
@@ -587,17 +604,35 @@ def play_song(song, config):
     }
     pb["next"] = None
     store.save_playback(pb)
+
+    # 실제 재생은 yt 서비스(mpv)에 위임. 실패해도 선정은 살린다.
+    played = True
+    try:
+        yt_play(song.get("track_name", ""), song.get("artist_name", ""))
+    except Exception as e:
+        played = False
+        print("[music] yt_play 실패 — 곡은 선정됐지만 재생 안 됨(yt 서버 확인 필요):", e)
+
     set_broadcast(
         music_source="dj",
         music_title=f"{song.get('track_name')} - {song.get('artist_name', '')}",
         next_title=None,
-        is_playing=True,
+        is_playing=played,
         current_time=0,
         duration=dur,
     )
 
 def run_music_tick(config):
-    """자동 DJ 한 틱: 첫 곡 시작 / 다음 곡 프리페치 / 곡 종료 시 회전."""
+    """자동 DJ 한 틱. 다른 음악 틱이 진행 중이면 건너뛴다(중복 선곡/재생 방지)."""
+    if not _music_lock.acquire(blocking=False):
+        return
+    try:
+        _run_music_tick_impl(config)
+    finally:
+        _music_lock.release()
+
+def _run_music_tick_impl(config):
+    """첫 곡 시작 / 다음 곡 프리페치 / 곡 종료 시 회전."""
     pb = store.load_playback()
     np = pb.get("now_playing")
     now = store.now_ts()

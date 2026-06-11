@@ -9,6 +9,15 @@
 """
 import os
 import sys
+import warnings
+
+# recommender가 scaler.transform에 (컬럼명 없는) numpy 배열을 넘겨서 나오는 무해한 경고.
+# 결과엔 영향 없고 터미널만 도배하므로 이 경고만 끈다(추천 코어는 수정하지 않음).
+warnings.filterwarnings(
+    "ignore",
+    message="X does not have valid feature names",
+    category=UserWarning,
+)
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BACKEND_DIR)

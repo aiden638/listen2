@@ -113,6 +113,8 @@ def short_term_openai_messages():
             out.append({"role": "assistant", "content": m["text"]})
         else:
             who = m.get("user") or "시청자"
+            # 유튜브 등에서 "표시명(채널ID)" 형태로 올 때 채널ID는 떼고 표시명만 쓴다
+            who = who.split("(")[0].strip() or "시청자"
             out.append({"role": "user", "content": f"{who}: {m['text']}"})
     return out
 
