@@ -34,9 +34,11 @@ get_assembled_prompt() = template.txt 조립:
 - `template.txt` 재설계: 페르소나 → 방송상황(분위기) → 기억 → 예시 → 주제 순.
 - 시청자 이름 정리: "표시명(채널ID)" → 표시명만 (memory_store.short_term_openai_messages).
 
-## ② 내용 튜닝 — 할 일 (다음)
-1. **example_dialogue.txt 가 비어 있음** → 라이브 버튜버 스타일 예시 작성(말투·선별 뉘앙스). 영향 큼.
-2. **페르소나 ↔ 선별 충돌**: roleplay_info "시청자의 마지막 말에 가장 먼저 반응한다"(=무조건 반응) ↔ live_rules "다 답하지 마라".
-   → roleplay_info는 HOW(말투/성격)만, WHEN은 live_rules가 담당하도록 페르소나 문구 수정.
-3. live_rules 선별 기준 캘리브레이션(테스트하며 침묵/응답 비율 조정).
-4. (선택) now_playing 곡 정보도 프롬프트에 주입할지 — "지금 이 노래 틀고 있어" 인지.
+## ② 내용 튜닝 — 진행 상황
+1. ✅ **example_dialogue.txt 작성** — 1:다수 + 선별 응답 스타일(침묵/응답 예시 6개). 페르소나(여고생 버튜버) 톤 유지.
+2. ⏸ **페르소나 ↔ 선별 충돌**: roleplay_info "마지막 말에 무조건 반응" 문구 — 사용자 요청으로 **지금은 그대로 두고** 예시로 선별 학습. 테스트 후 거슬리면 그때 수정(파일이라 언제든 가능).
+3. ⏭ live_rules 선별 기준 캘리브레이션 — test_stream.py로 침묵/응답 비율 보며 조정.
+4. ⏭ (선택) now_playing 곡 정보 프롬프트 주입 — "지금 이 노래 틀고 있어" 인지.
+
+## 다음 행동
+- `python test_stream.py`로 선별 응답이 예시대로 잘 되는지 관찰 → live_rules 미세조정.
