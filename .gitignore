@@ -7,11 +7,3 @@ backend/.env
 __pycache__/
 **/__pycache__/
 *.pyc
-
-# 런타임 동적 상태 (단기/장기기억, 재생상태)
-backend/state/*.json
-
-# Node 의존성 (OS마다 다른 네이티브 바이너리 포함 → git에 올리지 않음)
-node_modules/
-**/node_modules/
-.vercel

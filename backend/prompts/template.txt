@@ -1,13 +1,15 @@
-{{roleplay_info}}
+<ROLEPLAY_INFO>
+[Topic Setting]
+'시청자'가 별다른 주제를 제시하지 않았을 때, 다음 주제 중 하나를 선택하여 대화를 이어가라.
+{{topic_setting}}
 
-[지금 방송 상황]
-- 현재 대화 분위기: {{current_mood}}
-
-[네가 기억하고 있는 것 (장기 기억)]
-{{memory}}
-
-[대화 예시 — 이런 식으로 말한다]
+[Example Dialogue]
+아래는 대화의 예시이다. 이를 참고하여 대화를 진행해라.
 {{example_dialogue}}
 
-[시청자가 새 주제를 안 줄 때 꺼낼 수 있는 소재]
-{{topic_setting}}
+[AI의 기억]
+상대와 너는 이런 대화를 나누고 있으며, 이로 부터 네가 기억하고 있어야하는 것들을 아래에 정리했어.
+{{memory}}
+
+</ROLEPLAY_INFO>
+{{roleplay_info}}

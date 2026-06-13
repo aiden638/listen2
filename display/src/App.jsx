@@ -1,13 +1,54 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Music, Sparkles, MessageSquare, Play, Volume2, Move, Clock } from 'lucide-react';
 import './App.css';
+import VrmAvatar from './VrmAvatar';
+
+// Path to the 3D avatar. Drop the exported file at display/public/Hayakawa_Aoi.vrm
+// to switch the character widget from the 2D image to the live 3D model.
+const VRM_URL = '/Hayakawa_Aoi.vrm';
+
+// Default broadcast background. Drop your image at display/public/background.jpg
+// (or change this path). It's used whenever the controller hasn't set one.
+const DEFAULT_BG = '/background.jpg';
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+
+// How long the reaction expression is held before returning to neutral.
+const EXPRESSION_HOLD_MS = 5000;
+
+// Fallback emotion guess from the reply text, used only if the backend didn't
+// provide an `emotion` field (e.g. older backend still running).
+function guessEmotion(text) {
+  const t = text || '';
+  if (/[ㅠㅜ]|슬프|미안|죄송|아쉽|속상|눈물|😢|😭/.test(t)) return 'sad';
+  if (/화나|짜증|화가|분노|😠|😡/.test(t)) return 'angry';
+  if (/헐|대박|놀라|세상에|뭐라고|믿기지|😮|😲|!\?|\?!/.test(t)) return 'surprised';
+  if (/ㅎㅎ|ㅋㅋ|좋아|기뻐|행복|최고|즐거|신나|반가|😊|😄|😁|❤️/.test(t)) return 'happy';
+  if (/괜찮|편안|여유|쉬어|차분|평온|☺️/.test(t)) return 'relaxed';
+  return 'neutral';
+}
 
 function App() {
   const [latestMessage, setLatestMessage] = useState("메시지를 기다리는 중...");
   const [lastMsgTimestamp, setLastMsgTimestamp] = useState(0);
   const [hasReceivedMessage, setHasReceivedMessage] = useState(false);
+
+  // Avatar facial expression. Set from the LLM reply's emotion when a new
+  // message arrives, held for ~10s, then reverted to neutral.
+  const [expression, setExpression] = useState('neutral');
+  const expressionTimer = useRef(null);
+
+  // Dev preview: press 0-5 to force an expression without a live chat.
+  // (0 neutral, 1 happy, 2 sad, 3 angry, 4 surprised, 5 relaxed)
+  useEffect(() => {
+    const names = ['neutral', 'happy', 'sad', 'angry', 'surprised', 'relaxed'];
+    const onKey = (e) => {
+      const n = parseInt(e.key, 10);
+      if (!Number.isNaN(n) && n >= 0 && n < names.length) setExpression(names[n]);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Broadcast Settings
   const [settings, setSettings] = useState({
@@ -20,7 +61,6 @@ function App() {
     current_time: 0,
     duration: 0,
     show_character: true,
-    accept_live_chat: true,
     timestamp: 0
   });
 
@@ -38,15 +78,27 @@ function App() {
   const audioRef = useRef(null);
   const [currentMusicUrl, setCurrentMusicUrl] = useState(null);
 
+  // Use the 3D avatar only if the .vrm file is actually present; otherwise
+  // fall back to the 2D image. Re-checked once on mount.
+  const [use3D, setUse3D] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(VRM_URL, { method: 'HEAD' })
+      .then((res) => {
+        const ok = res.ok && !(res.headers.get('content-type') || '').includes('text/html');
+        if (!cancelled) setUse3D(ok);
+      })
+      .catch(() => { if (!cancelled) setUse3D(false); });
+    return () => { cancelled = true; };
+  }, []);
+
   // Drag & Resize State
   const [dragging, setDragging] = useState(null);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
 
   // Update backend with current playback status
-  // 업로드(로컬 파일) 재생일 때만 브라우저 <audio>의 시간을 보고한다.
-  // DJ 추천곡은 yt/mpv가 서버에서 재생하므로(music_url 없음) 시간을 보고하면 안 된다.
   const reportPlaybackStatus = async () => {
-    if (!audioRef.current || !isAudioStarted || !currentMusicUrl) return;
+    if (!audioRef.current || !isAudioStarted) return;
     try {
       await fetch(`${API_BASE}/broadcast-settings`, {
         method: 'POST',
@@ -70,6 +122,15 @@ function App() {
             setLatestMessage(msgData.content);
             setLastMsgTimestamp(msgData.timestamp);
             setHasReceivedMessage(true);
+
+            // React with the reply's emotion, then revert to neutral after a hold.
+            const emotion = msgData.emotion || guessEmotion(msgData.content);
+            setExpression(emotion);
+            if (expressionTimer.current) clearTimeout(expressionTimer.current);
+            expressionTimer.current = setTimeout(
+              () => setExpression('neutral'),
+              EXPRESSION_HOLD_MS
+            );
           }
         }
 
@@ -77,15 +138,14 @@ function App() {
         if (setRes.ok) {
           const setData = await setRes.json();
           
-          // 업로드(로컬 파일) 재생일 때만 브라우저 audio를 제어한다.
-          // DJ 추천곡은 yt/mpv가 서버에서 재생하므로 브라우저 audio는 관여하지 않는다.
-          if (audioRef.current && isAudioStarted && setData.music_url) {
+          // Handle Play/Pause
+          if (audioRef.current && isAudioStarted) {
             if (setData.is_playing && audioRef.current.paused) {
               audioRef.current.play().catch(e => console.log(e));
             } else if (!setData.is_playing && !audioRef.current.paused) {
               audioRef.current.pause();
             }
-
+            
             // Handle Seeking from Controller (if diff > 3s)
             if (Math.abs(setData.current_time - audioRef.current.currentTime) > 3) {
                 audioRef.current.currentTime = setData.current_time;
@@ -95,19 +155,10 @@ function App() {
           if (setData.timestamp > settings.timestamp) {
             setSettings(setData);
             if (setData.music_url && setData.music_url !== currentMusicUrl) {
-              // 새 업로드 파일 로드
               setCurrentMusicUrl(setData.music_url);
               if (audioRef.current) {
                 audioRef.current.src = setData.music_url;
                 if (isAudioStarted && setData.is_playing) audioRef.current.play().catch(e => console.log(e));
-              }
-            } else if (!setData.music_url && currentMusicUrl) {
-              // DJ 전환 등으로 음원 URL이 비워짐 → 업로드 오디오를 멈춰 이중재생 방지
-              setCurrentMusicUrl(null);
-              if (audioRef.current) {
-                audioRef.current.pause();
-                audioRef.current.removeAttribute('src');
-                audioRef.current.load();
               }
             }
           }
@@ -177,7 +228,7 @@ function App() {
     <div 
       className={`display-container mode-${settings.mode}`}
       style={{ 
-        backgroundImage: settings.bg_image ? `url(${settings.bg_image})` : 'none',
+        backgroundImage: `url(${settings.bg_image || DEFAULT_BG})`,
         backgroundSize: 'cover',
         backgroundPosition: 'center'
       }}
@@ -224,7 +275,7 @@ function App() {
           {settings.show_character !== false && (
             <div 
               id="draggable-char"
-              className={`character-container draggable animate-float ${dragging === 'char' ? 'dragging' : ''}`}
+              className={`character-container draggable ${dragging === 'char' ? 'dragging' : ''}`}
               onMouseDown={(e) => handleMouseDown(e, 'char')}
               style={{
                 left: `${charLayout.x}%`,
@@ -235,11 +286,16 @@ function App() {
                 cursor: 'grab'
               }}
             >
-              <div className="character-body" style={{ width: '100%', height: '100%', borderRadius: `${charLayout.w * 0.25}px` }}>
-                <div className={`eye left ${hasReceivedMessage ? 'happy' : ''}`} style={{ top: `${charLayout.h * 0.33}px`, left: `${charLayout.w * 0.25}px` }}></div>
-                <div className={`eye right ${hasReceivedMessage ? 'happy' : ''}`} style={{ top: `${charLayout.h * 0.33}px`, right: `${charLayout.w * 0.25}px` }}></div>
-                <div className={`mouth ${hasReceivedMessage ? 'happy' : ''}`} style={{ bottom: `${charLayout.h * 0.33}px`, width: `${charLayout.w * 0.2}px` }}></div>
-                <div className="blush" style={{ top: `${charLayout.h * 0.5}px`, width: `${charLayout.w * 0.15}px` }}></div>
+              <div className={`character-body image-avatar ${hasReceivedMessage ? 'happy' : ''}`} style={{ width: '100%', height: '100%' }}>
+                {use3D ? (
+                  <VrmAvatar
+                    url={VRM_URL}
+                    expression={expression}
+                    onError={() => setUse3D(false)}
+                  />
+                ) : (
+                  <img src="/avatar.png" alt="Student Avatar" className="avatar-img" />
+                )}
               </div>
               <div className="character-shadow" style={{ width: `${charLayout.w * 0.6}px` }}></div>
               <div className="resize-handle char-resize" onMouseDown={(e) => handleMouseDown(e, 'resize-char')}></div>
@@ -298,11 +354,6 @@ function App() {
               <div className="progress-container">
                 <div className="progress-bar" style={{ width: `${(settings.current_time / settings.duration) * 100}%` }}></div>
               </div>
-              {settings.next_title && (
-                <div className="next-up" style={{ fontSize: '11px', opacity: 0.65, marginTop: '4px' }}>
-                  다음 곡 ▸ {settings.next_title}
-                </div>
-              )}
             </div>
             <div className="audio-status">
               <Volume2 size={18} className={settings.is_playing ? "text-accent" : "text-muted"} />
