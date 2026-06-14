@@ -64,9 +64,12 @@ DEFAULT_CONFIG = {
     "temperature": 0.8,
     "summary_model": "gpt-4o-mini",
     "keyword_temperature": 0.3,
-    # 단기기억 evict (memory_store)
-    "short_term_ttl_sec": 120,   # 이 시간(초)보다 오래된 메시지는 단기기억에서 삭제
-    "short_term_max": 40,        # 단기기억 메시지 개수 상한
+    # 원문 대화 버퍼 evict (memory_store buffer)
+    "buffer_ttl_sec": 120,   # 이 시간(초)보다 오래된 메시지는 버퍼에서 삭제
+    "buffer_max": 40,        # 버퍼 메시지 개수 상한
+    # 단기기억(발화자 사실, facts)
+    "facts_ttl_sec": 600,        # 발화자 사실은 이 시간(초, 기본 10분) 지나면 잊는다
+    "facts_max": 40,             # 사실 개수 상한
     # 채팅 speak-loop (말하는 리듬)
     "speak_interval_sec": 10,    # 이 간격마다 한 박자(말할 기회). 입력 빈도와 무관한 출력 리듬
     "idle_initiate_sec": 25,     # 채팅·응답이 이만큼 없으면 AI가 먼저 말을 건다
@@ -136,36 +139,27 @@ class SettingsUpdate(BaseModel):
 # ───────────────────────── 공용 헬퍼 ─────────────────────────
 
 def get_assembled_prompt():
-    """template.txt의 {{변수}}를 채워 system 프롬프트를 조립한다.
+    """system 프롬프트의 '기본 컨텍스트'를 코드에서 조립한다.
 
-    {{memory}}(장기기억)는 txt가 아니라 state/long_term.json에서 가져온다.
-    그 외 {{name}}은 prompts/name.txt 내용으로 치환.
+    페르소나(prompts/roleplay_info.txt) + 동적 상태(분위기/장기·단기기억) + 대화 예시(prompts/example_dialogue.txt).
+    (예전의 template.txt {{변수}} 방식을 대체 — prompts 파일 수를 줄이고 구조를 단순화)
+    '언제/어떻게 말할지' 규칙(live_rules.txt)·출력형식은 build_speak_system_prompt에서 덧붙인다.
     """
-    template_path = os.path.join(PROMPTS_DIR, "template.txt")
-    if not os.path.exists(template_path):
-        return "You are a helpful AI assistant."
-    try:
-        with open(template_path, "r", encoding="utf-8") as f:
-            template = f.read()
-        placeholders = re.findall(r"\{\{(.*?)\}\}", template)
-        assembled = template
-        for var_name in set(placeholders):
-            clean_name = var_name.strip()
-            if clean_name == "memory":
-                content = store.long_term_text()
-            elif clean_name == "current_mood":
-                mood = store.load_short_term().get("current_mood") or []
-                content = ", ".join(mood) if mood else "(아직 분위기 파악 전)"
-            else:
-                txt_path = os.path.join(PROMPTS_DIR, f"{clean_name}.txt")
-                content = ""
-                if os.path.exists(txt_path):
-                    with open(txt_path, "r", encoding="utf-8") as f:
-                        content = f.read().strip()
-            assembled = assembled.replace(f"{{{{{var_name}}}}}", content)
-        return assembled
-    except Exception:
-        return "You are a helpful AI assistant."
+    persona = read_prompt_text("roleplay_info.txt", "너는 친근한 방송 AI다.")
+    examples = read_prompt_text("example_dialogue.txt")
+    mood = ", ".join(store.load_buffer().get("current_mood") or []) or "(아직 분위기 파악 전)"
+    situation = store.long_term_text() or "(아직 특별한 상황 없음)"
+    facts = store.facts_text() or "(아직 시청자에 대해 아는 것 없음)"
+
+    parts = [
+        persona,
+        f"[지금 방송 분위기]\n- {mood}",
+        f"[방송 전체 상황 (장기 기억)]\n{situation}",
+        f"[시청자별로 기억하는 것 (단기 기억)]\n{facts}",
+    ]
+    if examples:
+        parts.append(f"[대화 예시 — 이런 식으로 말한다]\n{examples}")
+    return "\n\n".join(parts)
 
 def call_gpt(messages, model, temperature=None, response_format=None):
     """OpenAI Chat Completions 호출 후 응답 텍스트를 반환한다."""
@@ -206,8 +200,8 @@ def classify_emotion(text, config):
         return "neutral"
 
 def read_local_context():
-    """국소적인(최근) 대화 맥락 = 단기기억(short_term.json). 비어있으면 최신 응답으로 대체."""
-    st = store.load_short_term()
+    """국소적인(최근) 대화 맥락 = 단기기억(buffer.json). 비어있으면 최신 응답으로 대체."""
+    st = store.load_buffer()
     lines = []
     for m in st["messages"]:
         who = "AI" if m.get("role") == "assistant" else (m.get("user") or "시청자")
@@ -279,8 +273,8 @@ async def get_latest_response():
 
 @app.get("/broadcast-settings")
 async def get_broadcast_settings():
-    # current_mood(채팅 tick이 short_term.json에 기록)도 함께 노출 — frontend 분위기 표시/지정용.
-    return {**broadcast_settings, "current_mood": store.load_short_term().get("current_mood") or []}
+    # current_mood(채팅 tick이 buffer.json에 기록)도 함께 노출 — frontend 분위기 표시/지정용.
+    return {**broadcast_settings, "current_mood": store.load_buffer().get("current_mood") or []}
 
 @app.post("/broadcast-settings")
 async def update_broadcast_settings(settings: SettingsUpdate):
@@ -303,13 +297,16 @@ async def update_broadcast_settings(settings: SettingsUpdate):
 @app.post("/new-chat")
 async def new_chat():
     """대화/기억/재생 상태를 모두 초기화하고 자동 DJ도 끈다."""
-    global latest_response, _dj_enabled
+    global latest_response, _dj_enabled, _pending_count, _last_chat_ts, _initiated_idle
     store.reset_all()
     _dj_enabled = False
     yt_stop()
+    _pending_count = 0
+    _last_chat_ts = store.now_ts()   # 초기화 직후엔 idle_initiate 후에 첫 주제를 던지도록
+    _initiated_idle = False
     latest_response = {"content": "", "timestamp": 0, "emotion": "neutral"}
     set_broadcast(next_title=None, music_source=None)
-    return {"status": "success", "message": "State (short/long term, playback) reset"}
+    return {"status": "success", "message": "State (buffer/facts/long-term, playback) reset"}
 
 
 # ───────────────────────── [HA] 채팅: 1:1 관리자/테스트 (/chat) ─────────────────────────
@@ -325,12 +322,12 @@ async def chat(request: ChatRequest):
         # 입력 → 단기기억 → system+단기기억으로 응답 → 응답도 단기기억 → evict→장기 승격
         store.append_message(user="관리자" if request.is_admin else "시청자", text=request.message, role="viewer")
         messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(store.short_term_openai_messages())
+        messages.extend(store.buffer_openai_messages())
         ai_text = call_gpt(messages, config["model"], config.get("temperature"))
 
         store.append_message(user=None, text=ai_text, role="assistant")
         store.set_last_response_ts(store.now_ts())
-        evicted = store.evict_short_term(config["short_term_ttl_sec"], config["short_term_max"])
+        evicted = store.evict_buffer(config["buffer_ttl_sec"], config["buffer_max"])
         if evicted:
             store.append_long_term([summarize_evicted(evicted, config)])
 
@@ -472,12 +469,17 @@ _last_chat_ts = 0      # 마지막으로 새 채팅이 들어온 시각
 _last_speak_ts = 0     # AI가 마지막으로 말한 시각
 _agent_state = "listening"  # listening(듣는 중) | thinking(응답 생성 중)
 _next_beat_ts = 0      # 다음 박자(말할 기회) 예정 시각 — frontend 카운트다운용
+_initiated_idle = False  # 이번 침묵 동안 이미 새 주제를 한 번 던졌는지(중복 방지)
 
 # 출력 형식 지시는 코드의 JSON 파싱과 결합돼 있으므로 코드에 둔다(편집 금지).
 # '언제 응답할지' 규칙은 prompts/live_rules.txt 에서 편집한다.
 TICK_OUTPUT_SPEC = """
 [출력 형식] 반드시 아래 JSON으로만 답하라:
-{"respond": true 또는 false, "reply": "응답문 (respond가 false면 빈 문자열)", "mood": ["지금 분위기 단어", ...], "remember": ["이후에도 기억할 상황 맥락 문장", ...]}
+{"respond": true 또는 false,
+ "reply": "응답문 (respond가 false면 빈 문자열)",
+ "mood": ["지금 분위기 단어", ...],
+ "facts": [{"speaker": "발화자 이름", "fact": "그 사람에 대해 새로 알게 된 사실(없으면 빈 배열)"}],
+ "situation": ["방송 전체의 주제나 지금 상황(거시적인 것만, 없으면 빈 배열)"]}
 """
 
 SPEAK_INITIATE_HINT = "\n[지금 상황] 채팅이 한동안 없었다. 시청자를 기다리게 두지 말고 네가 먼저 가볍게 말을 걸거나 화제를 던져라(respond=true)."
@@ -500,7 +502,7 @@ def run_speak_beat(config, initiate=False):
     """한 박자: 쌓인 채팅 맥락으로 LLM을 1회 호출해 말할지/무엇을·분위기·기억을 처리한다(동기)."""
     global latest_response, _last_speak_ts
 
-    msgs = store.load_short_term()["messages"]
+    msgs = store.load_buffer()["messages"]
     # 마지막 AI 발언 이후 새 시청자 채팅이 있는지 — 없으면 이미 다 답한 상태라 반복 방지로 침묵한다
     has_unaddressed = False
     for m in reversed(msgs):
@@ -514,7 +516,7 @@ def run_speak_beat(config, initiate=False):
         return
 
     messages = [{"role": "system", "content": build_speak_system_prompt(initiate)}]
-    messages.extend(store.short_term_openai_messages())
+    messages.extend(store.buffer_openai_messages())
     raw = call_gpt(messages, config["model"], config.get("temperature"), response_format={"type": "json_object"})
     try:
         data = json.loads(raw)
@@ -524,9 +526,9 @@ def run_speak_beat(config, initiate=False):
     mood = data.get("mood") or []
     if mood:
         store.set_current_mood(mood)
-    remember = data.get("remember") or []
-    if remember:
-        store.append_long_term(remember)
+    # 단기기억(발화자 사실) / 장기기억(거시 상황) 분리 적립
+    store.add_facts(data.get("facts") or [])
+    store.append_long_term(data.get("situation") or [])
 
     reply = (data.get("reply") or "").strip()
     last_reply = (latest_response.get("content") or "").strip()
@@ -538,11 +540,12 @@ def run_speak_beat(config, initiate=False):
         emotion = classify_emotion(reply, config)
         latest_response = {"content": reply, "timestamp": time.time(), "emotion": emotion}
 
-    store.evict_short_term(config["short_term_ttl_sec"], config["short_term_max"])
+    store.evict_buffer(config["buffer_ttl_sec"], config["buffer_max"])
+    store.evict_facts(config.get("facts_ttl_sec", 600), config.get("facts_max", 40))
 
 async def speak_loop():
     """AI의 말하는 리듬. speak_interval마다 한 박자, 그동안 쌓인 채팅을 보고 말할지 결정한다."""
-    global _pending_count, _agent_state, _next_beat_ts
+    global _pending_count, _agent_state, _next_beat_ts, _initiated_idle
     while True:
         config = get_config()
         interval = config.get("speak_interval_sec", 10)
@@ -551,14 +554,21 @@ async def speak_loop():
         await asyncio.sleep(interval)
         now = store.now_ts()
         has_new = _pending_count > 0
-        quiet = (now - max(_last_chat_ts, _last_speak_ts)) >= config.get("idle_initiate_sec", 25)
-        # 새 채팅이 있으면 반응 검토 / 오래 조용하면 먼저 말 검 / 둘 다 아니면 이 박자는 침묵
-        if not has_new and not quiet:
-            continue
+        # 채팅이 idle_initiate_sec 동안 하나도 없으면 '침묵' 상태로 본다.
+        silent = (now - _last_chat_ts) >= config.get("idle_initiate_sec", 25)
+
+        if has_new:
+            initiate = False                 # 새 채팅에 반응
+        elif silent and not _initiated_idle:
+            initiate = True                  # 이번 침묵에 대해 '딱 한 번' 새 주제를 던진다
+            _initiated_idle = True
+        else:
+            continue                         # 새 채팅 없고, 이미 한 번 던졌으면 침묵 유지
+
         _pending_count = 0
         _agent_state = "thinking"
         try:
-            await asyncio.to_thread(run_speak_beat, config, not has_new)
+            await asyncio.to_thread(run_speak_beat, config, initiate)
         except Exception as e:
             print("[speak] error:", e)
         _agent_state = "listening"
@@ -568,10 +578,11 @@ async def ingest(request: IngestRequest):
     """라이브 채팅 한 줄을 받아 단기기억에 넣는다. AI는 자기 리듬(speak_loop)으로 반응한다."""
     if not request.is_admin and not broadcast_settings.get("accept_live_chat", True):
         raise HTTPException(status_code=403, detail="Live chat input is currently disabled.")
-    global _pending_count, _last_chat_ts
+    global _pending_count, _last_chat_ts, _initiated_idle
     store.append_message(user=request.user or "시청자", text=request.text, role="viewer")
     _pending_count += 1
     _last_chat_ts = store.now_ts()
+    _initiated_idle = False   # 새 채팅이 왔으니 다음 침묵 때 다시 주제를 던질 수 있다
     return {"status": "ok", "pending": _pending_count}
 
 @app.get("/agent-status")
@@ -641,7 +652,7 @@ def pick_song(config, override_keywords=None):
         context = read_local_context()
         keywords = select_mood_keywords(context, words, config) if context else []
         if not keywords:
-            mood = store.load_short_term().get("current_mood") or []
+            mood = store.load_buffer().get("current_mood") or []
             keywords = [w for w in mood if w in set(words)][:5]
     try:
         # keywords가 비어 있어도 recommender는 랜덤 인기곡으로 폴백한다 → 첫 곡 보장

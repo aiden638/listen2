@@ -6,10 +6,10 @@
 ## 실행 모델 — 백그라운드 루프 2개
 
 ```
-[채팅 수집]  POST /ingest {user,text}  →  short_term.json append (+ accept_live_chat 게이트)
+[채팅 수집]  POST /ingest {user,text}  →  buffer.json append (+ accept_live_chat 게이트)
                                               │
 [채팅 tick]  (tick_seconds OR pending tick_messages개)  →  LLM 1회 → {respond, reply, mood, remember}
-                                              │            침묵/응답(latest_response)  short_term/long_term
+                                              │            침묵/응답(latest_response)  buffer/long_term
 [음악 루프]  (_dj_enabled 일 때, 3초마다)
    - now_playing 없음        → 첫 곡 선정·재생
    - 종료 prefetch_lead초 전 → 다음 곡 미리 선정 → playback.next + broadcast.next_title
@@ -22,14 +22,14 @@
 backend/
 ├── prompts/   ← 정적, 사람이 편집 (template/roleplay_info/topic_setting/example_dialogue .txt)
 ├── state/     ← 동적, 기계 관리 (JSON, gitignore, /new-chat 초기화)
-│   ├── short_term.json  long_term.json  playback.json
+│   ├── buffer.json  long_term.json  playback.json
 ├── memory_store.py   ← state/ JSON 을 다루는 유일한 모듈 (락으로 동시성 보호)
 ├── recommender_bridge.py  ← 루트 추천엔진 지연 로딩
 └── main.py           ← 엔드포인트 + 백그라운드 루프
 ```
 
 ## JSON 스키마
-- **short_term.json**: `{messages:[{ts,user,text,role}], current_mood:[], last_response_ts}`
+- **buffer.json**: `{messages:[{ts,user,text,role}], current_mood:[], last_response_ts}`
   - role: "viewer"(→user) | "assistant". evict: ts가 ttl 초과 또는 개수 > max → 오래된 것부터 제거.
 - **long_term.json**: `{stream_context:[문장...], updated_at}` — tick의 remember + 단기 evict 요약이 채움. `{{memory}}`로 주입.
 - **playback.json**: `{now_playing:{title,artist,started_at,duration_sec}, next:{...}, history:[]}`. duration_sec는 추천곡 duration_ms 기반.
@@ -46,7 +46,7 @@ backend/
 - 방송: `GET/POST /broadcast-settings`, `GET /latest-response`, 프롬프트 `GET /prompts` `GET/POST /prompt`
 
 ## config.json (튜닝)
-`model, temperature, summary_model, keyword_temperature, short_term_ttl_sec, short_term_max, tick_seconds, tick_messages, prefetch_lead_sec, default_song_sec`
+`model, temperature, summary_model, keyword_temperature, buffer_ttl_sec, buffer_max, tick_seconds, tick_messages, prefetch_lead_sec, default_song_sec`
 
 ## 검증
 - `python test_chat.py` : 1:1 채팅 + 키워드 + 추천

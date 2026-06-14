@@ -41,7 +41,7 @@ def main_run():
             print(f"   💬 응답: {after['content']}")
         else:
             print(f"   🤐 침묵 (맥락만 흡수)")
-        print(f"   분위기: {store.load_short_term().get('current_mood', [])}\n")
+        print(f"   분위기: {store.load_buffer().get('current_mood', [])}\n")
 
     print("─" * 50)
     print("장기기억(stream_context):")

@@ -2,7 +2,7 @@
 
 설계 문서: backend/DESIGN.md
 
-- short_term.json : 최근 채팅 메시지 버퍼 (TTL/개수로 자동 evict)
+- buffer.json : 최근 채팅 메시지 버퍼 (TTL/개수로 자동 evict)
 - long_term.json  : 방송 상황 맥락 (stream_context 리스트, 축적)
 - playback.json   : 현재/다음 곡 재생 상태 (자동 DJ)
 
@@ -22,12 +22,14 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.path.join(BASE_DIR, "state")
 os.makedirs(STATE_DIR, exist_ok=True)
 
-SHORT_TERM_PATH = os.path.join(STATE_DIR, "short_term.json")
-LONG_TERM_PATH = os.path.join(STATE_DIR, "long_term.json")
+BUFFER_PATH = os.path.join(STATE_DIR, "buffer.json")  # 원문 대화 버퍼(최근 메시지)
+FACTS_PATH = os.path.join(STATE_DIR, "facts.json")           # 단기기억: 발화자별 사실 (분 단위)
+LONG_TERM_PATH = os.path.join(STATE_DIR, "long_term.json")   # 장기기억: 거시 상황/주제
 PLAYBACK_PATH = os.path.join(STATE_DIR, "playback.json")
 
 DEFAULTS = {
-    SHORT_TERM_PATH: {"messages": [], "current_mood": [], "last_response_ts": 0},
+    BUFFER_PATH: {"messages": [], "current_mood": [], "last_response_ts": 0},
+    FACTS_PATH: {"facts": []},  # [{speaker, fact, ts}]
     LONG_TERM_PATH: {"stream_context": [], "updated_at": 0},
     PLAYBACK_PATH: {"now_playing": None, "next": None, "history": []},
 }
@@ -61,30 +63,30 @@ def _save(path, data):
 
 # ─────────────────────────── 단기기억 ───────────────────────────
 
-def load_short_term():
-    return _load(SHORT_TERM_PATH)
+def load_buffer():
+    return _load(BUFFER_PATH)
 
 
-def save_short_term(data):
-    _save(SHORT_TERM_PATH, data)
+def save_buffer(data):
+    _save(BUFFER_PATH, data)
 
 
 def append_message(user, text, role="viewer"):
     """채팅 한 줄을 단기기억에 추가한다. role: "viewer" | "assistant"."""
     with _lock:
-        st = load_short_term()
+        st = load_buffer()
         st["messages"].append({"ts": now_ts(), "user": user, "text": text, "role": role})
-        save_short_term(st)
+        save_buffer(st)
         return st
 
 
-def evict_short_term(ttl_sec, max_count):
+def evict_buffer(ttl_sec, max_count):
     """오래되었거나(ts가 ttl 초과) 개수가 max_count를 넘은 메시지를 제거한다.
 
     제거된 메시지 리스트를 반환한다(호출부가 장기기억으로 요약 승격할 수 있도록).
     """
     with _lock:
-        st = load_short_term()
+        st = load_buffer()
         msgs = st["messages"]
         cutoff = now_ts() - ttl_sec
 
@@ -97,16 +99,16 @@ def evict_short_term(ttl_sec, max_count):
             fresh = fresh[overflow:]
 
         st["messages"] = fresh
-        save_short_term(st)
+        save_buffer(st)
         return evicted
 
 
-def short_term_openai_messages():
+def buffer_openai_messages():
     """단기기억을 OpenAI messages(role/content)로 변환한다.
 
     viewer→user("이름: 내용"), assistant→assistant.
     """
-    st = load_short_term()
+    st = load_buffer()
     out = []
     for m in st["messages"]:
         if m.get("role") == "assistant":
@@ -121,16 +123,16 @@ def short_term_openai_messages():
 
 def set_current_mood(mood):
     with _lock:
-        st = load_short_term()
+        st = load_buffer()
         st["current_mood"] = mood
-        save_short_term(st)
+        save_buffer(st)
 
 
 def set_last_response_ts(ts):
     with _lock:
-        st = load_short_term()
+        st = load_buffer()
         st["last_response_ts"] = ts
-        save_short_term(st)
+        save_buffer(st)
 
 
 # ─────────────────────────── 장기기억 ───────────────────────────
@@ -154,9 +156,54 @@ def append_long_term(items):
 
 
 def long_term_text():
-    """장기기억을 프롬프트에 넣기 좋은 텍스트로 반환한다."""
+    """장기기억(거시 상황)을 프롬프트에 넣기 좋은 텍스트로 반환한다."""
     lt = load_long_term()
     return "\n".join(f"- {c}" for c in lt["stream_context"])
+
+
+# ─────────────────────────── 단기기억: 발화자별 사실 (facts) ───────────────────────────
+
+def load_facts():
+    return _load(FACTS_PATH)
+
+
+def add_facts(items):
+    """발화자별 사실을 추가한다. items: [{"speaker": 이름, "fact": 사실}]. 중복은 무시."""
+    if not items:
+        return
+    with _lock:
+        data = load_facts()
+        existing = {(x.get("speaker"), x.get("fact")) for x in data["facts"]}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            sp = (it.get("speaker") or "").strip() or "시청자"
+            fa = (it.get("fact") or "").strip()
+            if fa and (sp, fa) not in existing:
+                data["facts"].append({"speaker": sp, "fact": fa, "ts": now_ts()})
+                existing.add((sp, fa))
+        _save(FACTS_PATH, data)
+
+
+def evict_facts(ttl_sec, max_count=None):
+    """오래된(ts가 ttl 초과) 사실을 제거하고, 개수 상한이 있으면 최근 것만 남긴다."""
+    with _lock:
+        data = load_facts()
+        cutoff = now_ts() - ttl_sec
+        kept = [x for x in data["facts"] if x.get("ts", 0) >= cutoff]
+        if max_count and len(kept) > max_count:
+            kept = kept[-max_count:]
+        data["facts"] = kept
+        _save(FACTS_PATH, data)
+
+
+def facts_text():
+    """단기기억을 '발화자: 사실1, 사실2' 형태의 텍스트로 반환한다(프롬프트용)."""
+    data = load_facts()
+    by_speaker = {}
+    for x in data["facts"]:
+        by_speaker.setdefault(x.get("speaker") or "시청자", []).append(x.get("fact"))
+    return "\n".join(f"- {sp}: {', '.join(facts)}" for sp, facts in by_speaker.items())
 
 
 # ─────────────────────────── 재생상태 (자동 DJ) ───────────────────────────
@@ -174,5 +221,5 @@ def save_playback(data):
 def reset_all():
     """모든 동적 상태를 기본 구조로 초기화한다(/new-chat)."""
     with _lock:
-        for path in (SHORT_TERM_PATH, LONG_TERM_PATH, PLAYBACK_PATH):
+        for path in (BUFFER_PATH, FACTS_PATH, LONG_TERM_PATH, PLAYBACK_PATH):
             _save(path, _default(path))

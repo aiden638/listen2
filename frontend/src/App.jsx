@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Send, Sparkles, MessageSquare, Image as ImageIcon, Music, 
-  Play, Pause, Monitor, Tv, Clock, Type, Layout, Volume2, ListMusic, User
+  Play, Pause, Monitor, Tv, Clock, Type, Layout, Volume2, ListMusic, User, RotateCcw
 } from 'lucide-react';
 import './index.css';
 
@@ -132,6 +132,16 @@ function App() {
     } catch (e) { console.error(e); } finally { setIsLoading(false); }
   };
 
+  // 대화/기억/재생 상태 초기화 (POST /new-chat)
+  const handleNewChat = async () => {
+    if (!window.confirm('대화 기록과 기억(단기·장기)을 모두 초기화할까요?')) return;
+    try {
+      await fetch(`${API_BASE}/new-chat`, { method: 'POST' });
+      setMessages([]);
+      lastAiTsRef.current = 0;
+    } catch (e) { console.error(e); }
+  };
+
   const handleUpdateBroadcastSettings = async (updates) => {
     try {
       await fetch(`${API_BASE}/broadcast-settings`, {
@@ -202,9 +212,19 @@ function App() {
             <MessageSquare size={20} className="text-accent" />
             <h1>라이브 채팅 컨트롤</h1>
           </div>
-          <div className="status-badge">
-            <div className="status-dot"></div>
-            <span>ONLINE</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              onClick={handleNewChat}
+              title="대화/기억 초기화"
+              style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px', fontSize: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(0,0,0,0.2)', color: 'inherit', cursor: 'pointer' }}
+            >
+              <RotateCcw size={13} /> 초기화
+            </button>
+            <div className="status-badge">
+              <div className="status-dot"></div>
+              <span>ONLINE</span>
+            </div>
           </div>
         </div>
 

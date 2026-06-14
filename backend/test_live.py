@@ -99,7 +99,7 @@ def main():
         return
 
     config = get_config()
-    short_term = config.get("short_term_turns", 3)
+    buffer = config.get("buffer_turns", 3)
     system_prompt = get_assembled_prompt()
 
     print("=" * 60)
@@ -127,7 +127,7 @@ def main():
 
         # 대화 진행: system + 최근 단기기억 + 이번 입력
         messages = [{"role": "system", "content": system_prompt}]
-        for u, a in turns[-short_term:]:
+        for u, a in turns[-buffer:]:
             messages.append({"role": "user", "content": u})
             messages.append({"role": "assistant", "content": a})
         messages.append({"role": "user", "content": user_msg})

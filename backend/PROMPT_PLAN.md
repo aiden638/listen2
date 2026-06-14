@@ -66,5 +66,14 @@ get_assembled_prompt() = template.txt 조립:
 ## 제안 순서 (천천히, 하나씩)
 - A. 출력 cadence(speak-loop) — ✅ 완료 (commit b154eb7). tick 폐기, speak_interval/idle_initiate.
 - B. 답변 맥락화(이름/되짚기) + 스타일 — ✅ 완료 (commit 97d1883). live_rules에 반영.
-- C. 메모리 3층 재정의 — 다음. (원문버퍼 / 단기=발화자 사실 / 장기=상황)
-- D. prompts 파일 단순화 — 다음.
+- C. 메모리 3층 재정의 — ✅ 완료(미커밋). short_term.json=원문버퍼 / facts.json=단기(발화자 사실, TTL 10분) / long_term.json=장기(상황).
+     speak 출력 remember→facts/situation 분리. 프롬프트에 {{speaker_facts}} 주입. config: facts_ttl_sec/facts_max.
+- D. prompts 파일 단순화 — ✅ 완료(미커밋). 5개→3개.
+     template.txt(조립골격)는 코드(get_assembled_prompt)로 흡수, topic_setting→roleplay_info 병합,
+     옛 chat_history.txt/memory.txt 제거. 남은 prompts/: roleplay_info(페르소나+화제) / live_rules(규칙) / example_dialogue(예시).
+     동적 주입(분위기/장기·단기기억)은 코드에서 처리.
+
+## ③ A~D 모두 완료. 남은 것
+- 사용자가 말한 "살짝 수정하고 싶은 부분" 듣기.
+- (미해결) 페르소나 roleplay_info "대화 방식: 시청자의 마지막 말에 가장 먼저 반응한다" ↔ live_rules 선별 충돌. 필요시 그 줄만 손보기.
+- cadence 값(speak_interval 10초 / idle 25초) 실사용 튜닝.
