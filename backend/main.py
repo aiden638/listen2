@@ -67,9 +67,9 @@ DEFAULT_CONFIG = {
     # 단기기억 evict (memory_store)
     "short_term_ttl_sec": 120,   # 이 시간(초)보다 오래된 메시지는 단기기억에서 삭제
     "short_term_max": 40,        # 단기기억 메시지 개수 상한
-    # 채팅 tick (선별 응답)
-    "tick_seconds": 4,           # 마지막 tick 후 이 시간 지나면 tick
-    "tick_messages": 8,          # 대기 메시지가 이 개수 쌓이면 tick
+    # 채팅 speak-loop (말하는 리듬)
+    "speak_interval_sec": 10,    # 이 간격마다 한 박자(말할 기회). 입력 빈도와 무관한 출력 리듬
+    "idle_initiate_sec": 25,     # 채팅·응답이 이만큼 없으면 AI가 먼저 말을 건다
     # 자동 DJ (음악 루프)
     "prefetch_lead_sec": 60,     # 곡 종료(추정) 몇 초 전에 다음 곡을 미리 선정할지
     "default_song_sec": 210,     # 추천곡에 길이 정보가 없을 때 가정할 곡 길이(초)
@@ -458,14 +458,17 @@ async def recommend(request: RecommendRequest | None = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ───────────────────────── [HA] 채팅 tick (선별 응답) ─────────────────────────
+# ───────────────────────── [HA] 채팅 speak-loop (말하는 리듬) ─────────────────────────
 #
-# 1:다수 라이브 채팅. /ingest 로 들어온 메시지를 단기기억에 쌓다가,
-# (tick_seconds 경과) 또는 (대기 tick_messages개 누적) 중 먼저 오면 tick을 돌린다.
-# tick은 LLM 1회로 {respond, reply, mood, remember}를 받아 선별 응답한다.
+# 1:다수 라이브 채팅. /ingest 로 들어온 메시지는 단기기억에 쌓아만 둔다.
+# AI는 speak_interval_sec 마다 한 '박자'씩 말할 기회를 갖고, 그동안 쌓인 채팅 묶음을
+# LLM 1회로 보고 {respond, reply, mood, remember}를 받아 말할지/무엇을 결정한다.
+# → 입력 1개당 출력 1개가 아니라, 출력은 AI 자기 리듬으로.
+# 채팅·응답이 idle_initiate_sec 동안 없으면 먼저 말을 건다.
 
-_pending_count = 0
-_last_tick_ts = 0
+_pending_count = 0     # 직전 박자 이후 들어온 새 채팅 수
+_last_chat_ts = 0      # 마지막으로 새 채팅이 들어온 시각
+_last_speak_ts = 0     # AI가 마지막으로 말한 시각
 
 # 출력 형식 지시는 코드의 JSON 파싱과 결합돼 있으므로 코드에 둔다(편집 금지).
 # '언제 응답할지' 규칙은 prompts/live_rules.txt 에서 편집한다.
@@ -473,6 +476,8 @@ TICK_OUTPUT_SPEC = """
 [출력 형식] 반드시 아래 JSON으로만 답하라:
 {"respond": true 또는 false, "reply": "응답문 (respond가 false면 빈 문자열)", "mood": ["지금 분위기 단어", ...], "remember": ["이후에도 기억할 상황 맥락 문장", ...]}
 """
+
+SPEAK_INITIATE_HINT = "\n[지금 상황] 채팅이 한동안 없었다. 시청자를 기다리게 두지 말고 네가 먼저 가볍게 말을 걸거나 화제를 던져라(respond=true)."
 
 def read_prompt_text(filename, default=""):
     """prompts/ 의 텍스트 파일을 읽어 반환한다(없으면 default)."""
@@ -482,17 +487,18 @@ def read_prompt_text(filename, default=""):
             return f.read().strip()
     return default
 
-def build_tick_system_prompt():
-    """tick용 system 프롬프트 = 페르소나/상황/기억(template) + 선별응답 규칙(live_rules) + 출력형식(코드)."""
+def build_speak_system_prompt(initiate=False):
+    """speak용 system 프롬프트 = 페르소나/상황/기억(template) + 선별응답 규칙(live_rules) + 출력형식(코드)."""
     live_rules = read_prompt_text("live_rules.txt")
-    return f"{get_assembled_prompt()}\n\n{live_rules}\n{TICK_OUTPUT_SPEC}"
+    hint = SPEAK_INITIATE_HINT if initiate else ""
+    return f"{get_assembled_prompt()}\n\n{live_rules}{hint}\n{TICK_OUTPUT_SPEC}"
 
-def run_tick_sync(config):
-    """대기 중인 채팅 맥락으로 LLM을 1회 호출해 선별 응답/분위기/기억을 처리한다(동기)."""
-    messages = [{"role": "system", "content": build_tick_system_prompt()}]
+def run_speak_beat(config, initiate=False):
+    """한 박자: 쌓인 채팅 맥락으로 LLM을 1회 호출해 말할지/무엇을·분위기·기억을 처리한다(동기)."""
+    messages = [{"role": "system", "content": build_speak_system_prompt(initiate)}]
     messages.extend(store.short_term_openai_messages())
-    if len(messages) == 1:
-        return
+    if len(messages) == 1 and not initiate:
+        return  # 맥락도 없고 먼저 말 걸 상황도 아니면 거른다
     raw = call_gpt(messages, config["model"], config.get("temperature"), response_format={"type": "json_object"})
     try:
         data = json.loads(raw)
@@ -510,36 +516,40 @@ def run_tick_sync(config):
         reply = data["reply"].strip()
         store.append_message(user=None, text=reply, role="assistant")
         store.set_last_response_ts(store.now_ts())
-        global latest_response
+        global latest_response, _last_speak_ts
+        _last_speak_ts = store.now_ts()
         emotion = classify_emotion(reply, config)
         latest_response = {"content": reply, "timestamp": time.time(), "emotion": emotion}
 
     store.evict_short_term(config["short_term_ttl_sec"], config["short_term_max"])
 
-async def chat_tick_loop():
-    global _pending_count, _last_tick_ts
+async def speak_loop():
+    """AI의 말하는 리듬. speak_interval마다 한 박자, 그동안 쌓인 채팅을 보고 말할지 결정한다."""
+    global _pending_count
     while True:
-        await asyncio.sleep(1)
-        if _pending_count <= 0:
-            continue
         config = get_config()
-        elapsed = store.now_ts() - _last_tick_ts
-        if _pending_count >= config["tick_messages"] or elapsed >= config["tick_seconds"]:
-            _pending_count = 0
-            _last_tick_ts = store.now_ts()
-            try:
-                await asyncio.to_thread(run_tick_sync, config)
-            except Exception as e:
-                print("[chat_tick] error:", e)
+        await asyncio.sleep(config.get("speak_interval_sec", 10))
+        now = store.now_ts()
+        has_new = _pending_count > 0
+        quiet = (now - max(_last_chat_ts, _last_speak_ts)) >= config.get("idle_initiate_sec", 25)
+        # 새 채팅이 있으면 반응 검토 / 오래 조용하면 먼저 말 검 / 둘 다 아니면 이 박자는 침묵
+        if not has_new and not quiet:
+            continue
+        _pending_count = 0
+        try:
+            await asyncio.to_thread(run_speak_beat, config, not has_new)
+        except Exception as e:
+            print("[speak] error:", e)
 
 @app.post("/ingest")
 async def ingest(request: IngestRequest):
-    """라이브 채팅 한 줄을 받아 단기기억에 넣고 tick 대기열에 올린다."""
+    """라이브 채팅 한 줄을 받아 단기기억에 넣는다. AI는 자기 리듬(speak_loop)으로 반응한다."""
     if not broadcast_settings.get("accept_live_chat", True):
         raise HTTPException(status_code=403, detail="Live chat input is currently disabled.")
-    global _pending_count
+    global _pending_count, _last_chat_ts
     store.append_message(user=request.user or "시청자", text=request.text, role="viewer")
     _pending_count += 1
+    _last_chat_ts = store.now_ts()
     return {"status": "ok", "pending": _pending_count}
 
 
@@ -754,7 +764,7 @@ async def dj_status():
 
 @app.on_event("startup")
 async def _start_background_loops():
-    asyncio.create_task(chat_tick_loop())
+    asyncio.create_task(speak_loop())
     asyncio.create_task(music_loop())
 
 

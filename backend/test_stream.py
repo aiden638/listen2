@@ -34,7 +34,7 @@ def main_run():
         print(f"[{label}] {chat_line}")
 
         before_ts = main.latest_response.get("timestamp", 0)
-        main.run_tick_sync(config)
+        main.run_speak_beat(config)
         after = main.latest_response
 
         if after.get("timestamp", 0) != before_ts and after.get("content"):
