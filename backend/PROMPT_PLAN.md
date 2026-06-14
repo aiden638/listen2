@@ -64,7 +64,7 @@ get_assembled_prompt() = template.txt 조립:
    (현재 5개: template, roleplay_info, topic_setting, example_dialogue, live_rules)
 
 ## 제안 순서 (천천히, 하나씩)
-- A. 출력 cadence(말하는 리듬) 재설계 — 핵심, 묶음 입력 1회 판단
-- B. 답변 맥락화(이름/되짚기) + 스타일
-- C. 메모리 3층 재정의
-- D. prompts 파일 단순화
+- A. 출력 cadence(speak-loop) — ✅ 완료 (commit b154eb7). tick 폐기, speak_interval/idle_initiate.
+- B. 답변 맥락화(이름/되짚기) + 스타일 — ✅ 완료 (commit 97d1883). live_rules에 반영.
+- C. 메모리 3층 재정의 — 다음. (원문버퍼 / 단기=발화자 사실 / 장기=상황)
+- D. prompts 파일 단순화 — 다음.

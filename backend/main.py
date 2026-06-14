@@ -109,6 +109,7 @@ class ChatRequest(BaseModel):
 class IngestRequest(BaseModel):
     user: str | None = None
     text: str
+    is_admin: bool = False           # True면 accept_live_chat OFF여도 주입 허용(개발자 테스트)
 
 class RecommendRequest(BaseModel):
     keywords: list[str] | None = None
@@ -469,6 +470,8 @@ async def recommend(request: RecommendRequest | None = None):
 _pending_count = 0     # 직전 박자 이후 들어온 새 채팅 수
 _last_chat_ts = 0      # 마지막으로 새 채팅이 들어온 시각
 _last_speak_ts = 0     # AI가 마지막으로 말한 시각
+_agent_state = "listening"  # listening(듣는 중) | thinking(응답 생성 중)
+_next_beat_ts = 0      # 다음 박자(말할 기회) 예정 시각 — frontend 카운트다운용
 
 # 출력 형식 지시는 코드의 JSON 파싱과 결합돼 있으므로 코드에 둔다(편집 금지).
 # '언제 응답할지' 규칙은 prompts/live_rules.txt 에서 편집한다.
@@ -525,10 +528,13 @@ def run_speak_beat(config, initiate=False):
 
 async def speak_loop():
     """AI의 말하는 리듬. speak_interval마다 한 박자, 그동안 쌓인 채팅을 보고 말할지 결정한다."""
-    global _pending_count
+    global _pending_count, _agent_state, _next_beat_ts
     while True:
         config = get_config()
-        await asyncio.sleep(config.get("speak_interval_sec", 10))
+        interval = config.get("speak_interval_sec", 10)
+        _agent_state = "listening"
+        _next_beat_ts = store.now_ts() + interval
+        await asyncio.sleep(interval)
         now = store.now_ts()
         has_new = _pending_count > 0
         quiet = (now - max(_last_chat_ts, _last_speak_ts)) >= config.get("idle_initiate_sec", 25)
@@ -536,21 +542,35 @@ async def speak_loop():
         if not has_new and not quiet:
             continue
         _pending_count = 0
+        _agent_state = "thinking"
         try:
             await asyncio.to_thread(run_speak_beat, config, not has_new)
         except Exception as e:
             print("[speak] error:", e)
+        _agent_state = "listening"
 
 @app.post("/ingest")
 async def ingest(request: IngestRequest):
     """라이브 채팅 한 줄을 받아 단기기억에 넣는다. AI는 자기 리듬(speak_loop)으로 반응한다."""
-    if not broadcast_settings.get("accept_live_chat", True):
+    if not request.is_admin and not broadcast_settings.get("accept_live_chat", True):
         raise HTTPException(status_code=403, detail="Live chat input is currently disabled.")
     global _pending_count, _last_chat_ts
     store.append_message(user=request.user or "시청자", text=request.text, role="viewer")
     _pending_count += 1
     _last_chat_ts = store.now_ts()
     return {"status": "ok", "pending": _pending_count}
+
+@app.get("/agent-status")
+async def agent_status():
+    """speak-loop 상태(듣는 중/생각 중)와 다음 발화까지 남은 시간 — frontend 표시용."""
+    now = store.now_ts()
+    return {
+        "state": _agent_state,                                  # listening | thinking
+        "next_beat_in": max(0, _next_beat_ts - now),            # 다음 박자까지 남은 초
+        "pending": _pending_count,                              # 대기 중인 새 채팅 수
+        "speak_interval_sec": get_config().get("speak_interval_sec", 10),
+        "last_speak_ago": (now - _last_speak_ts) if _last_speak_ts else None,
+    }
 
 
 # ───────────────────────── [HA] 자동 DJ (음악 루프) ─────────────────────────

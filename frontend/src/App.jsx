@@ -12,6 +12,9 @@ function App() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [moodInput, setMoodInput] = useState(''); // 운영자가 첫 곡 분위기를 직접 지정할 때 입력
+  const [devChatMode, setDevChatMode] = useState('reply'); // 'reply'=무조건 답변(/chat), 'live'=라이브처럼(/ingest)
+  const [agentStatus, setAgentStatus] = useState({ state: 'listening', next_beat_in: 0, pending: 0, speak_interval_sec: 10 });
+  const lastAiTsRef = useRef(0); // /latest-response 중복 표시 방지
 
   // Layout Resizing State
   const [chatWidth, setChatWidth] = useState(window.innerWidth * 0.35);
@@ -74,18 +77,55 @@ function App() {
     } catch (e) { console.error(e); }
   };
 
+  // AI 상태(듣는 중/생각 중, 다음 발화 카운트다운) 폴링. 라이브 모드일 땐 AI 발화도 가져와 표시.
+  useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const s = await fetch(`${API_BASE}/agent-status`);
+        if (s.ok) setAgentStatus(await s.json());
+      } catch (e) {}
+      if (devChatMode === 'live') {
+        try {
+          const r = await fetch(`${API_BASE}/latest-response`);
+          if (r.ok) {
+            const d = await r.json();
+            if (d.timestamp && d.timestamp !== lastAiTsRef.current && d.content) {
+              lastAiTsRef.current = d.timestamp;
+              setMessages(prev => [...prev, { role: 'ai', content: d.content }]);
+            }
+          }
+        } catch (e) {}
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [devChatMode]);
+
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
-    const userMsg = { role: 'user', content: input };
-    setMessages(prev => [...prev, userMsg]);
+    const text = input;
+    setMessages(prev => [...prev, { role: 'user', content: text }]);
     setInput('');
+
+    if (devChatMode === 'live') {
+      // 라이브 채팅처럼 주입 — 즉시 반환하고 입력을 막지 않는다. AI는 자기 리듬으로 반응(폴링으로 표시).
+      try {
+        await fetch(`${API_BASE}/ingest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user: '개발자', text, is_admin: true }),
+        });
+      } catch (e) { console.error(e); }
+      return;
+    }
+
+    // 무조건 답변 모드 — 1:1로 즉시 답을 받는다(생성 동안 입력 잠금).
     setIsLoading(true);
     try {
       const res = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input, is_admin: true }),
+        body: JSON.stringify({ message: text, is_admin: true }),
       });
       const data = await res.json();
       setMessages(prev => [...prev, { role: 'ai', content: data.response }]);
@@ -182,6 +222,27 @@ function App() {
             </div>
           ))}
           {isLoading && <div className="typing-dots-mini">...</div>}
+        </div>
+
+        {/* 개발자 채팅 모드 토글 — 무조건 답변(/chat) vs 라이브처럼(/ingest, 자기 리듬) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 4px 10px', fontSize: '12px' }}>
+          <span style={{ opacity: 0.65, whiteSpace: 'nowrap' }}>개발자 채팅</span>
+          <button
+            type="button"
+            className={`vis-btn ${devChatMode === 'reply' ? 'active show' : ''}`}
+            style={{ flex: 1 }}
+            onClick={() => setDevChatMode('reply')}
+          >
+            무조건 답변
+          </button>
+          <button
+            type="button"
+            className={`vis-btn ${devChatMode === 'live' ? 'active show' : ''}`}
+            style={{ flex: 1 }}
+            onClick={() => setDevChatMode('live')}
+          >
+            라이브처럼
+          </button>
         </div>
 
         <form className="chat-input-footer" onSubmit={handleSendMessage}>
@@ -385,6 +446,24 @@ function App() {
                 <div className="vis-hint">
                   {settings.accept_live_chat !== false ? '라이브 채팅(외부/스트림)을 받습니다' : '관리자 테스트 채팅만 허용합니다'}
                 </div>
+              </div>
+            </div>
+          </div>
+
+          {/* AI 상태 타일 — speak-loop 상태 + 다음 발화 카운트다운 */}
+          <div className="tile-node glass-card">
+            <div className="tile-header-node"><Sparkles size={14} /> <span>AI 상태</span></div>
+            <div className="tile-content-node">
+              <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '6px' }}>
+                {agentStatus.state === 'thinking' ? '💭 생각 중…' : '👂 듣는 중'}
+              </div>
+              <div style={{ fontSize: '12px', opacity: 0.75 }}>
+                {agentStatus.state === 'thinking'
+                  ? '응답 생성 중'
+                  : `다음 발화까지 ${agentStatus.next_beat_in ?? 0}초`}
+              </div>
+              <div style={{ fontSize: '11px', opacity: 0.5, marginTop: '4px' }}>
+                대기 채팅 {agentStatus.pending ?? 0}개 · 리듬 {agentStatus.speak_interval_sec ?? 10}초
               </div>
             </div>
           </div>
