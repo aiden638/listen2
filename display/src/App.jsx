@@ -7,6 +7,9 @@ import VrmAvatar from './VrmAvatar';
 // 없으면 2D 이미지(/avatar.png)로 자동 폴백한다.
 const VRM_URL = '/Hayakawa_Aoi.vrm';
 
+// 컨트롤러가 배경을 지정하지 않았을 때 쓰는 기본 배경. display/public/background.jpg.
+const DEFAULT_BG = '/background.jpg';
+
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 // 반응 표정을 neutral로 되돌리기 전까지 유지하는 시간(ms).
@@ -235,7 +238,7 @@ function App() {
     <div 
       className={`display-container mode-${settings.mode}`}
       style={{ 
-        backgroundImage: settings.bg_image ? `url(${settings.bg_image})` : 'none',
+        backgroundImage: `url(${settings.bg_image || DEFAULT_BG})`,
         backgroundSize: 'cover',
         backgroundPosition: 'center'
       }}
