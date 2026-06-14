@@ -1,13 +1,48 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Music, Sparkles, MessageSquare, Play, Volume2, Move, Clock } from 'lucide-react';
 import './App.css';
+import VrmAvatar from './VrmAvatar';
+
+// 3D 아바타 경로. display/public/Hayakawa_Aoi.vrm 가 있으면 3D 모델을,
+// 없으면 2D 이미지(/avatar.png)로 자동 폴백한다.
+const VRM_URL = '/Hayakawa_Aoi.vrm';
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+
+// 반응 표정을 neutral로 되돌리기 전까지 유지하는 시간(ms).
+const EXPRESSION_HOLD_MS = 5000;
+
+// 백엔드가 emotion 필드를 주지 않을 때(구버전 백엔드 등)만 쓰는 답변 텍스트 기반 감정 추측.
+function guessEmotion(text) {
+  const t = text || '';
+  if (/[ㅠㅜ]|슬프|미안|죄송|아쉽|속상|눈물|😢|😭/.test(t)) return 'sad';
+  if (/화나|짜증|화가|분노|😠|😡/.test(t)) return 'angry';
+  if (/헐|대박|놀라|세상에|뭐라고|믿기지|😮|😲|!\?|\?!/.test(t)) return 'surprised';
+  if (/ㅎㅎ|ㅋㅋ|좋아|기뻐|행복|최고|즐거|신나|반가|😊|😄|😁|❤️/.test(t)) return 'happy';
+  if (/괜찮|편안|여유|쉬어|차분|평온|☺️/.test(t)) return 'relaxed';
+  return 'neutral';
+}
 
 function App() {
   const [latestMessage, setLatestMessage] = useState("메시지를 기다리는 중...");
   const [lastMsgTimestamp, setLastMsgTimestamp] = useState(0);
   const [hasReceivedMessage, setHasReceivedMessage] = useState(false);
+
+  // 아바타 표정. 새 메시지가 오면 답변 감정으로 설정하고, 잠시 유지 후 neutral로 되돌린다.
+  const [expression, setExpression] = useState('neutral');
+  const expressionTimer = useRef(null);
+
+  // 개발용 미리보기: 0~5 키로 라이브 채팅 없이 표정을 강제 전환.
+  // (0 neutral, 1 happy, 2 sad, 3 angry, 4 surprised, 5 relaxed)
+  useEffect(() => {
+    const names = ['neutral', 'happy', 'sad', 'angry', 'surprised', 'relaxed'];
+    const onKey = (e) => {
+      const n = parseInt(e.key, 10);
+      if (!Number.isNaN(n) && n >= 0 && n < names.length) setExpression(names[n]);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Broadcast Settings
   const [settings, setSettings] = useState({
@@ -37,6 +72,20 @@ function App() {
   const [isAudioStarted, setIsAudioStarted] = useState(false);
   const audioRef = useRef(null);
   const [currentMusicUrl, setCurrentMusicUrl] = useState(null);
+
+  // .vrm 파일이 실제로 있을 때만 3D 아바타를 쓰고, 없으면 2D 이미지로 폴백한다.
+  // 마운트 시 한 번 확인.
+  const [use3D, setUse3D] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(VRM_URL, { method: 'HEAD' })
+      .then((res) => {
+        const ok = res.ok && !(res.headers.get('content-type') || '').includes('text/html');
+        if (!cancelled) setUse3D(ok);
+      })
+      .catch(() => { if (!cancelled) setUse3D(false); });
+    return () => { cancelled = true; };
+  }, []);
 
   // Drag & Resize State
   const [dragging, setDragging] = useState(null);
@@ -70,6 +119,15 @@ function App() {
             setLatestMessage(msgData.content);
             setLastMsgTimestamp(msgData.timestamp);
             setHasReceivedMessage(true);
+
+            // 답변 감정으로 표정을 바꾸고, 일정 시간 뒤 neutral로 복귀.
+            const emotion = msgData.emotion || guessEmotion(msgData.content);
+            setExpression(emotion);
+            if (expressionTimer.current) clearTimeout(expressionTimer.current);
+            expressionTimer.current = setTimeout(
+              () => setExpression('neutral'),
+              EXPRESSION_HOLD_MS
+            );
           }
         }
 
@@ -235,11 +293,16 @@ function App() {
                 cursor: 'grab'
               }}
             >
-              <div className="character-body" style={{ width: '100%', height: '100%', borderRadius: `${charLayout.w * 0.25}px` }}>
-                <div className={`eye left ${hasReceivedMessage ? 'happy' : ''}`} style={{ top: `${charLayout.h * 0.33}px`, left: `${charLayout.w * 0.25}px` }}></div>
-                <div className={`eye right ${hasReceivedMessage ? 'happy' : ''}`} style={{ top: `${charLayout.h * 0.33}px`, right: `${charLayout.w * 0.25}px` }}></div>
-                <div className={`mouth ${hasReceivedMessage ? 'happy' : ''}`} style={{ bottom: `${charLayout.h * 0.33}px`, width: `${charLayout.w * 0.2}px` }}></div>
-                <div className="blush" style={{ top: `${charLayout.h * 0.5}px`, width: `${charLayout.w * 0.15}px` }}></div>
+              <div className={`character-body image-avatar ${hasReceivedMessage ? 'happy' : ''}`} style={{ width: '100%', height: '100%' }}>
+                {use3D ? (
+                  <VrmAvatar
+                    url={VRM_URL}
+                    expression={expression}
+                    onError={() => setUse3D(false)}
+                  />
+                ) : (
+                  <img src="/avatar.png" alt="Student Avatar" className="avatar-img" />
+                )}
               </div>
               <div className="character-shadow" style={{ width: `${charLayout.w * 0.6}px` }}></div>
               <div className="resize-handle char-resize" onMouseDown={(e) => handleMouseDown(e, 'resize-char')}></div>

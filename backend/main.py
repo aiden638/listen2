@@ -20,7 +20,9 @@ load_dotenv()
 YT_BASE = os.environ.get("YT_BASE", "http://localhost:8001")
 
 # ───────────────────────── [TEAM] 방송 송출 동기화 상태 ─────────────────────────
-latest_response = {"content": "", "timestamp": 0}
+# 아바타 표정용 감정 라벨. display 쪽 표정 프리셋(App.jsx/VrmAvatar.jsx)과 반드시 일치해야 한다.
+EMOTIONS = ["neutral", "happy", "sad", "angry", "surprised", "relaxed"]
+latest_response = {"content": "", "timestamp": 0, "emotion": "neutral"}
 broadcast_settings = {
     "bg_image": None,
     "music_url": None,                                  # upload 모드: 브라우저 audio가 재생할 URL
@@ -176,6 +178,32 @@ def call_gpt(messages, model, temperature=None, response_format=None):
     response = client.chat.completions.create(**kwargs)
     return response.choices[0].message.content.strip()
 
+def classify_emotion(text, config):
+    """AI 답변 텍스트가 드러내는 감정을 EMOTIONS 중 하나로 분류한다(아바타 표정용).
+
+    분류에 실패해도(키 없음/네트워크 오류 등) 'neutral'로 안전하게 떨어지므로
+    이 호출이 채팅/틱 흐름을 깨뜨리지 않는다.
+    """
+    if client is None or not text:
+        return "neutral"
+    try:
+        system_msg = (
+            "너는 텍스트의 감정을 분류하는 도구다. 아래 답변이 드러내는 감정을 "
+            + ", ".join(EMOTIONS)
+            + " 중 정확히 하나로만 고른다. "
+            '반드시 {"emotion": "<값>"} 형태의 JSON으로만 답하라.'
+        )
+        raw = call_gpt(
+            [{"role": "system", "content": system_msg}, {"role": "user", "content": text}],
+            config.get("summary_model", config["model"]),
+            0.0,
+            response_format={"type": "json_object"},
+        )
+        emotion = json.loads(raw).get("emotion", "neutral")
+        return emotion if emotion in EMOTIONS else "neutral"
+    except Exception:
+        return "neutral"
+
 def read_local_context():
     """국소적인(최근) 대화 맥락 = 단기기억(short_term.json). 비어있으면 최신 응답으로 대체."""
     st = store.load_short_term()
@@ -278,7 +306,7 @@ async def new_chat():
     store.reset_all()
     _dj_enabled = False
     yt_stop()
-    latest_response = {"content": "", "timestamp": 0}
+    latest_response = {"content": "", "timestamp": 0, "emotion": "neutral"}
     set_broadcast(next_title=None, music_source=None)
     return {"status": "success", "message": "State (short/long term, playback) reset"}
 
@@ -306,8 +334,9 @@ async def chat(request: ChatRequest):
             store.append_long_term([summarize_evicted(evicted, config)])
 
         global latest_response
-        latest_response = {"content": ai_text, "timestamp": time.time()}
-        return {"response": ai_text}
+        emotion = classify_emotion(ai_text, config)
+        latest_response = {"content": ai_text, "timestamp": time.time(), "emotion": emotion}
+        return {"response": ai_text, "emotion": emotion}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -482,7 +511,8 @@ def run_tick_sync(config):
         store.append_message(user=None, text=reply, role="assistant")
         store.set_last_response_ts(store.now_ts())
         global latest_response
-        latest_response = {"content": reply, "timestamp": time.time()}
+        emotion = classify_emotion(reply, config)
+        latest_response = {"content": reply, "timestamp": time.time(), "emotion": emotion}
 
     store.evict_short_term(config["short_term_ttl_sec"], config["short_term_max"])
 

@@ -178,14 +178,27 @@
   flex-direction: column;
 }
 
+/* 아바타(3D VRM 캔버스 또는 2D 이미지)를 담는 컨테이너.
+   기존 그라데이션 원형/CSS 얼굴 대신 아바타 자체를 렌더링하므로 배경은 투명하게 둔다. */
 .character-body {
-  background: var(--primary-gradient);
   position: relative;
-  box-shadow: 0 20px 50px rgba(56, 189, 248, 0.3);
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 2px solid rgba(255, 255, 255, 0.2);
+  filter: drop-shadow(0 15px 25px rgba(0,0,0,0.3));
+}
+
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), filter 0.3s;
+}
+
+.image-avatar.happy .avatar-img {
+  transform: scale(1.08) translateY(-5px);
+  filter: brightness(1.05);
 }
 
 .eye { 

@@ -15,3 +15,10 @@ backend/state/*.json
 node_modules/
 **/node_modules/
 .vercel
+
+# 빌드 산출물 (소스에서 다시 생성됨 → git에 올리지 않음)
+dist/
+**/dist/
+
+# 아바타 원본 패키지 (런타임엔 display/public/*.vrm 만 필요)
+*.unitypackage
