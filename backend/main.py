@@ -498,10 +498,23 @@ def build_speak_system_prompt(initiate=False):
 
 def run_speak_beat(config, initiate=False):
     """한 박자: 쌓인 채팅 맥락으로 LLM을 1회 호출해 말할지/무엇을·분위기·기억을 처리한다(동기)."""
+    global latest_response, _last_speak_ts
+
+    msgs = store.load_short_term()["messages"]
+    # 마지막 AI 발언 이후 새 시청자 채팅이 있는지 — 없으면 이미 다 답한 상태라 반복 방지로 침묵한다
+    has_unaddressed = False
+    for m in reversed(msgs):
+        role = m.get("role")
+        if role == "assistant":
+            break
+        if role == "viewer":
+            has_unaddressed = True
+            break
+    if not initiate and not has_unaddressed:
+        return
+
     messages = [{"role": "system", "content": build_speak_system_prompt(initiate)}]
     messages.extend(store.short_term_openai_messages())
-    if len(messages) == 1 and not initiate:
-        return  # 맥락도 없고 먼저 말 걸 상황도 아니면 거른다
     raw = call_gpt(messages, config["model"], config.get("temperature"), response_format={"type": "json_object"})
     try:
         data = json.loads(raw)
@@ -515,11 +528,12 @@ def run_speak_beat(config, initiate=False):
     if remember:
         store.append_long_term(remember)
 
-    if data.get("respond") and (data.get("reply") or "").strip():
-        reply = data["reply"].strip()
+    reply = (data.get("reply") or "").strip()
+    last_reply = (latest_response.get("content") or "").strip()
+    # respond=true 이고, 직전에 한 말과 다를 때만 실제로 발화(똑같은 답 반복 방지)
+    if data.get("respond") and reply and reply != last_reply:
         store.append_message(user=None, text=reply, role="assistant")
         store.set_last_response_ts(store.now_ts())
-        global latest_response, _last_speak_ts
         _last_speak_ts = store.now_ts()
         emotion = classify_emotion(reply, config)
         latest_response = {"content": reply, "timestamp": time.time(), "emotion": emotion}

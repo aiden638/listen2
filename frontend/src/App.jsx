@@ -207,7 +207,20 @@ function App() {
             <span>ONLINE</span>
           </div>
         </div>
-        
+
+        {/* AI 상태 + 다음 발화까지 남은 시간 (항상 보이게) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 2px 10px', fontSize: '13px' }}>
+          <span style={{ fontWeight: 600 }}>
+            {agentStatus.state === 'thinking' ? '💭 생각 중…' : '👂 듣는 중'}
+          </span>
+          {agentStatus.state !== 'thinking' && (
+            <span style={{ opacity: 0.7 }}>다음 발화까지 {agentStatus.next_beat_in ?? 0}초</span>
+          )}
+          {agentStatus.pending > 0 && (
+            <span style={{ opacity: 0.55 }}>· 대기 {agentStatus.pending}</span>
+          )}
+        </div>
+
         <div className="chat-messages-scroll" ref={chatMessagesRef}>
           {messages.length === 0 && (
             <div className="empty-state">
