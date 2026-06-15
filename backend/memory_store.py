@@ -121,6 +121,23 @@ def buffer_openai_messages():
     return out
 
 
+def buffer_as_chatlog():
+    """버퍼를 '발화자: 텍스트' 한 줄씩의 채팅 로그 텍스트로 만든다.
+
+    여러 시청자가 동시에 친 1:다수 채팅을 한 덩어리로 보여줘 화자 혼동을 막는다.
+    AI 자기 발언은 '나'로 표시한다.
+    """
+    st = load_buffer()
+    lines = []
+    for m in st["messages"]:
+        if m.get("role") == "assistant":
+            lines.append(f"나: {m['text']}")
+        else:
+            who = (m.get("user") or "시청자").split("(")[0].strip() or "시청자"
+            lines.append(f"{who}: {m['text']}")
+    return "\n".join(lines)
+
+
 def set_current_mood(mood):
     with _lock:
         st = load_buffer()

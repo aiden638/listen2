@@ -16,18 +16,33 @@ FEATURES = ['danceability', 'energy', 'speechiness', 'acousticness',
             'instrumentalness', 'liveness', 'valence', 'tempo', 'loudness']
 
 # Define the AutoEncoder Model
+# 구조는 배포된 models/autoencoder.pth 와 정확히 일치해야 한다(레이어 인덱스/크기).
+# encoder: 9→64→32→16→latent, decoder: latent→16→32→64→9 (Linear 사이 ReLU, 일부 Dropout).
+# 검증: 이 인코더로 데이터셋을 인코딩하면 models/processed_songs.csv 의 latent_* 와 일치함.
 class AudioAutoEncoder(nn.Module):
     def __init__(self, input_dim=9, latent_dim=4):
         super(AudioAutoEncoder, self).__init__()
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 8),
-            nn.ReLU(),
-            nn.Linear(8, latent_dim)
+            nn.Linear(input_dim, 64),  # 0
+            nn.ReLU(),                 # 1
+            nn.Dropout(0.2),           # 2
+            nn.Linear(64, 32),         # 3
+            nn.ReLU(),                 # 4
+            nn.Dropout(0.2),           # 5
+            nn.Linear(32, 16),         # 6
+            nn.ReLU(),                 # 7
+            nn.Linear(16, latent_dim)  # 8
         )
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 8),
-            nn.ReLU(),
-            nn.Linear(8, input_dim)
+            nn.Linear(latent_dim, 16), # 0
+            nn.ReLU(),                 # 1
+            nn.Linear(16, 32),         # 2
+            nn.ReLU(),                 # 3
+            nn.Dropout(0.2),           # 4
+            nn.Linear(32, 64),         # 5
+            nn.ReLU(),                 # 6
+            nn.Dropout(0.2),           # 7
+            nn.Linear(64, input_dim)   # 8
         )
 
     def forward(self, x):

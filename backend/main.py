@@ -474,12 +474,12 @@ _initiated_idle = False  # 이번 침묵 동안 이미 새 주제를 한 번 던
 # 출력 형식 지시는 코드의 JSON 파싱과 결합돼 있으므로 코드에 둔다(편집 금지).
 # '언제 응답할지' 규칙은 prompts/live_rules.txt 에서 편집한다.
 TICK_OUTPUT_SPEC = """
-[출력 형식] 반드시 아래 JSON으로만 답하라:
-{"respond": true 또는 false,
- "reply": "응답문 (respond가 false면 빈 문자열)",
- "mood": ["지금 분위기 단어", ...],
- "facts": [{"speaker": "발화자 이름", "fact": "그 사람에 대해 새로 알게 된 사실(없으면 빈 배열)"}],
- "situation": ["방송 전체의 주제나 지금 상황(거시적인 것만, 없으면 빈 배열)"]}
+[출력 형식] 아래 JSON으로만 답하라. < > 안은 채우라는 설명이니 실제 내용으로 바꾸고, 해당 없으면 빈 배열/빈 문자열로 둬라(설명 문구를 그대로 베껴 넣지 마라):
+{"respond": <true 또는 false>,
+ "reply": "<할 말. respond가 false면 빈 문자열>",
+ "mood": ["<지금 분위기를 나타내는 단어>"],
+ "facts": [{"speaker": "<발화자 이름>", "fact": "<그 사람에 대해 '새로' 알게 된 것만, 아주 짧게. 이름이나 '~라는 사실' 같은 군더더기 금지. 이미 [시청자별로 기억하는 것]에 있는 건 넣지 마라>"}],
+ "situation": ["<방송의 큰 흐름·주제가 바뀌었을 때만 한 문장. 사소한 잡담이면 빈 배열>"]}
 """
 
 SPEAK_INITIATE_HINT = "\n[지금 상황] 채팅이 한동안 없었다. 시청자를 기다리게 두지 말고 네가 먼저 가볍게 말을 걸거나 화제를 던져라(respond=true)."
@@ -515,8 +515,17 @@ def run_speak_beat(config, initiate=False):
     if not initiate and not has_unaddressed:
         return
 
-    messages = [{"role": "system", "content": build_speak_system_prompt(initiate)}]
-    messages.extend(store.buffer_openai_messages())
+    # 여러 시청자 채팅을 '채팅 로그' 한 덩어리로 제시한다(번갈아 대화로 넣으면 화자를 혼동함).
+    chatlog = store.buffer_as_chatlog()
+    user_msg = (
+        "[지금 채팅창] 여러 시청자가 동시에 올린 채팅이다. 각 줄 맨 앞이 발화자 이름이고, "
+        "'나:'로 시작하는 줄은 네가 직전에 한 말이다. 서로 다른 사람의 말을 한 사람처럼 합치지 마라.\n\n"
+        + (chatlog or "(아직 올라온 채팅이 없음)")
+    )
+    messages = [
+        {"role": "system", "content": build_speak_system_prompt(initiate)},
+        {"role": "user", "content": user_msg},
+    ]
     raw = call_gpt(messages, config["model"], config.get("temperature"), response_format={"type": "json_object"})
     try:
         data = json.loads(raw)
@@ -753,8 +762,11 @@ def _run_music_tick_impl(config):
         return  # 시작 직후 yt 상태 race로 인한 오탐 방지
 
     st = yt_status()
-    actually_ended = st is not None and st.get("status") in ("idle", "stopped", "error")
-    safety_exceeded = now >= ends_at_est + config.get("rotate_safety_sec", 30)
+    status = st.get("status") if st else None
+    actually_ended = status in ("idle", "stopped", "error")
+    # yt가 '재생 중(playing)'이라고 알려주면 믿고 절대 끊지 않는다(추정보다 긴 영상도 끝까지).
+    # 안전망은 yt 상태를 알 수 없을 때(None)만: 추정 종료 + 여유를 넘으면 회전(음악 끊김 방지).
+    safety_exceeded = (st is None) and now >= ends_at_est + config.get("rotate_safety_sec", 30)
 
     if actually_ended or safety_exceeded:
         nxt = store.load_playback().get("next") or pick_song(config)

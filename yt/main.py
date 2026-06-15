@@ -26,6 +26,9 @@ app.add_middleware(
 # ── 전역 상태 ──────────────────────────────────
 _proc: subprocess.Popen | None = None
 _lock = threading.Lock()
+# 매 /play마다 1 증가. 곡 교체 시, '교체된 옛 재생 스레드'가 전역 status를 건드리지 못하게 하는 토큰.
+# (옛 스레드가 종료되며 status를 idle로 덮어써 '방금 튼 곡이 끝났다'고 오판하는 경쟁을 막는다)
+_play_gen = 0
 
 state = {
     "status": "idle",   # idle | searching | playing | stopped | error
@@ -43,7 +46,7 @@ class PlayRequest(BaseModel):
 
 
 # ── 내부 함수 ──────────────────────────────────
-def _run(title: str, artist: str):
+def _run(title: str, artist: str, gen: int):
     global _proc
 
     query = f"{title} {artist}"
@@ -88,19 +91,24 @@ def _run(title: str, artist: str):
 
         proc.wait()  # 재생 완료 대기
 
-        if state["status"] == "playing":
+        # 내가 최신 재생이 아니면(다른 /play가 들어와 곡이 교체됨) status를 건드리지 않는다.
+        # → 교체로 mpv가 죽어 깨어난 옛 스레드가 새 곡 재생 중인 status를 idle로 덮는 경쟁 방지.
+        if gen == _play_gen and state["status"] == "playing":
             state["status"] = "idle"
 
     except Exception as e:
-        state["status"] = "error"
-        state["error"] = str(e)
+        if gen == _play_gen:
+            state["status"] = "error"
+            state["error"] = str(e)
 
 
 # ── 엔드포인트 ─────────────────────────────────
 @app.post("/play")
 async def play(req: PlayRequest):
     """제목 + 아티스트 → yt-dlp 검색 → mpv 백그라운드 재생"""
-    t = threading.Thread(target=_run, args=(req.title, req.artist), daemon=True)
+    global _play_gen
+    _play_gen += 1
+    t = threading.Thread(target=_run, args=(req.title, req.artist, _play_gen), daemon=True)
     t.start()
     return {"status": "started", "title": req.title, "artist": req.artist}
 
